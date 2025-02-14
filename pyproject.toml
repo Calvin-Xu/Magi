@@ -1,24 +1,40 @@
 [project]
 name = "magi"
 version = "0.1.0"
-description = "TBD"
-readme = "README.md"
+description = "LLM-powered Ontology Builder"
 authors = [{ name = "Pinlin [Calvin] Xu" }]
 requires-python = ">=3.11"
 dependencies = [
-    "gqlalchemy>=1.6.0",
-    "pgvector>=0.3.6",
-    "psycopg2>=2.9.10",
-    "pyspark>=3.5.4",
-    "requests>=2.32.3",
-    "sentence-transformers>=3.4.1",
-    "sqlalchemy>=2.0.38",
+    "gradio",
+    "requests",
+    "gqlalchemy",
+    "psycopg2-binary",
+    "pyspark",
+    "fastapi",
+]
+
+[project.optional-dependencies]
+dev = [
+    "uvicorn[standard]",
+    "black",
+    "ruff",
+    "hatchling",
 ]
 
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["magi*"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/magi"]
+
+[tool.hatch.build]
+packages = ["src/magi"]
+
+[dependency-groups]
+dev = [
+    "watchfiles>=1.0.4",
+]
+
+[tool.ruff]
+line-length = 88

@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
     container_name: magi-container
     depends_on:
       - postgres
@@ -12,8 +13,14 @@ services:
       - spark-worker
     ports:
       - "1998:1998"
-    # volumes:
-    #   - .:/src
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./uv.lock:/app/uv.lock
+    environment:
+      - PYTHONPATH=/app/src
+      - UV_PROJECT_ENVIRONMENT=/app/.venv
+
 
   postgres:
     image: pgvector/pgvector:0.8.0-pg17
@@ -31,7 +38,8 @@ services:
     image: memgraph/memgraph-mage:3.0-memgraph-3.0
     container_name: memgraph-container
     ports:
-      - "7687:7687"  # Bolt protocol for queries and GQLAlchemy
+      - "7687:7687" # Bolt protocol for queries and GQLAlchemy
+      - "7444:7444"
     volumes:
       - memgraph-data:/var/lib/memgraph
 
@@ -39,7 +47,7 @@ services:
     image: memgraph/lab:3.0.1
     container_name: memgraph-lab-container
     ports:
-      - "3000:3000"  # Memgraph Lab UI
+      - "3000:3000" # Memgraph Lab UI
     environment:
       MEMGRAPH_URI: memgraph
       MEMGRAPH_PORT: 7687
@@ -57,17 +65,17 @@ services:
       - SPARK_SSL_ENABLED=no
       - SPARK_USER=spark
     ports:
-      - "7077:7077"  # Spark master service
-      - "8080:8080"  # Spark master web UI
+      - "7077:7077" # Spark master service
+      - "8080:8080" # Spark master web UI
 
   spark-worker:
     image: bitnami/spark:3.5.4
     container_name: spark-worker
     environment:
       - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark-master:7077   # Connect to the spark-master service
-      - SPARK_WORKER_MEMORY=1G
-      - SPARK_WORKER_CORES=1
+      - SPARK_MASTER_URL=spark-master:7077 # Connect to the spark-master service
+      - SPARK_WORKER_MEMORY=8G
+      - SPARK_WORKER_CORES=4
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
       - SPARK_RPC_ENCRYPTION_ENABLED=no
       - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
@@ -76,7 +84,7 @@ services:
     depends_on:
       - spark-master
     ports:
-      - "8081:8081"  # Spark worker UI
+      - "8081:8081" # Spark worker UI
 
 volumes:
   pg-data:
