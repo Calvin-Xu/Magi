@@ -8,7 +8,8 @@ dependencies = [
     "gradio",
     "requests",
     "gqlalchemy",
-    "psycopg2-binary",
+    "asyncpg",
+    "aiohttp",
     "pyspark",
     "fastapi",
 ]
