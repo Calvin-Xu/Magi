@@ -785,6 +785,7 @@ dependencies = [
     { name = "gqlalchemy" },
     { name = "gradio" },
     { name = "pyspark" },
+    { name = "python-dotenv" },
     { name = "requests" },
 ]
 
@@ -811,6 +812,7 @@ requires-dist = [
     { name = "gradio" },
     { name = "hatchling", marker = "extra == 'dev'" },
     { name = "pyspark" },
+    { name = "python-dotenv" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'dev'" },

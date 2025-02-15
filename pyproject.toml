@@ -12,6 +12,7 @@ dependencies = [
     "aiohttp",
     "pyspark",
     "fastapi",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]

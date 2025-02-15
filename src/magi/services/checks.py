@@ -2,10 +2,13 @@ import asyncio
 import aiohttp
 import asyncpg
 from gqlalchemy import Memgraph
+from ..config import POSTGRES_CONFIG, MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG, SPARK_CONFIG
 from .status import ServiceState, service_status
 
 
-async def check_memgraph(host: str = "memgraph", port: int = 7687) -> None:
+async def check_memgraph(
+    host: str = MEMGRAPH_CONFIG["host"], port: int = MEMGRAPH_CONFIG["port"]
+) -> None:
     """Check Memgraph connection."""
     try:
         mg = Memgraph(host=host, port=port)
@@ -20,11 +23,11 @@ async def check_memgraph(host: str = "memgraph", port: int = 7687) -> None:
 
 
 async def check_postgres(
-    host: str = "postgres",
-    port: int = 5432,
-    db: str = "magidb",
-    user: str = "magiuser",
-    password: str = "magipassword",
+    host: str = POSTGRES_CONFIG["host"],
+    port: int = POSTGRES_CONFIG["port"],
+    db: str = POSTGRES_CONFIG["database"],
+    user: str = POSTGRES_CONFIG["user"],
+    password: str = POSTGRES_CONFIG["password"],
 ) -> None:
     """Check PostgreSQL connection using asyncpg."""
     try:
@@ -47,51 +50,51 @@ async def check_postgres(
 
 
 async def check_spark(
-    master_host: str = "spark-master", master_port: int = 8080
+    master_host: str = SPARK_CONFIG["master_host"],
+    master_port: int = SPARK_CONFIG["master_port"],
+    worker_host: str = SPARK_CONFIG["worker_host"],
+    worker_port: int = SPARK_CONFIG["worker_port"],
 ) -> None:
     """Check Spark master and worker health via their HTTP endpoints."""
     async with aiohttp.ClientSession() as session:
+        # Check master
+        master_url = f"http://{master_host}:{master_port}"
         try:
-            # Check Spark Master UI
-            async with session.get(
-                f"http://{master_host}:{master_port}", timeout=3
-            ) as master_resp:
-                if master_resp.status == 200:
+            async with session.get(master_url) as response:
+                if response.status == 200:
                     service_status.update(
                         "spark_master",
                         ServiceState.OK,
-                        f"Spark Master UI is responding at {master_host}:{master_port}",
+                        f"Connected to Spark master at {master_url}",
                     )
                 else:
-                    service_status.update(
-                        "spark_master",
-                        ServiceState.ERROR,
-                        f"Spark Master UI not OK. HTTP status: {master_resp.status}",
-                    )
-
-            # Check Spark Worker UI
-            async with session.get(
-                "http://spark-worker:8081", timeout=3
-            ) as worker_resp:
-                if worker_resp.status == 200:
-                    service_status.update(
-                        "spark_worker",
-                        ServiceState.OK,
-                        "Spark Worker UI is responding",
-                    )
-                else:
-                    service_status.update(
-                        "spark_worker",
-                        ServiceState.ERROR,
-                        f"Spark Worker UI not OK. HTTP status: {worker_resp.status}",
-                    )
+                    error_msg = f"Spark master returned status {response.status}"
+                    service_status.update("spark_master", ServiceState.ERROR, error_msg)
         except Exception as e:
-            error_msg = f"Could not connect to Spark services: {str(e)}"
+            error_msg = f"Could not connect to Spark master: {str(e)}"
             service_status.update("spark_master", ServiceState.ERROR, error_msg)
+
+        # Check worker
+        worker_url = f"http://{worker_host}:{worker_port}"
+        try:
+            async with session.get(worker_url) as response:
+                if response.status == 200:
+                    service_status.update(
+                        "spark_worker",
+                        ServiceState.OK,
+                        f"Connected to Spark worker at {worker_url}",
+                    )
+                else:
+                    error_msg = f"Spark worker returned status {response.status}"
+                    service_status.update("spark_worker", ServiceState.ERROR, error_msg)
+        except Exception as e:
+            error_msg = f"Could not connect to Spark worker: {str(e)}"
             service_status.update("spark_worker", ServiceState.ERROR, error_msg)
 
 
-async def check_memgraph_lab(host: str = "memgraph-lab", port: int = 3000) -> None:
+async def check_memgraph_lab(
+    host: str = MEMGRAPH_LAB_CONFIG["host"], port: int = MEMGRAPH_LAB_CONFIG["port"]
+) -> None:
     """Check Memgraph Lab UI."""
     async with aiohttp.ClientSession() as session:
         try:

@@ -12,7 +12,7 @@ services:
       - spark-master
       - spark-worker
     ports:
-      - "1998:1998"
+      - "${MAGI_PORT:-1998}:1998"
     volumes:
       - ./src:/app/src
       - ./pyproject.toml:/app/pyproject.toml
@@ -20,17 +20,27 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - UV_PROJECT_ENVIRONMENT=/app/.venv
-
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-magidb}
+      - POSTGRES_USER=${POSTGRES_USER:-magiuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-magipassword}
+      - MEMGRAPH_HOST=${MEMGRAPH_HOST:-memgraph}
+      - MEMGRAPH_PORT=${MEMGRAPH_PORT:-7687}
+      - MEMGRAPH_LAB_HOST=${MEMGRAPH_LAB_HOST:-memgraph-lab}
+      - MEMGRAPH_LAB_PORT=${MEMGRAPH_LAB_PORT:-3000}
+      - SPARK_MASTER_HOST=${SPARK_MASTER_HOST:-spark-master}
+      - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-8080}
 
   postgres:
     image: pgvector/pgvector:0.8.0-pg17
     container_name: postgres-container
     environment:
-      POSTGRES_USER: magiuser
-      POSTGRES_PASSWORD: magipassword
-      POSTGRES_DB: magidb
+      POSTGRES_USER: ${POSTGRES_USER:-magiuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-magipassword}
+      POSTGRES_DB: ${POSTGRES_DB:-magidb}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
 
@@ -38,8 +48,7 @@ services:
     image: memgraph/memgraph-mage:3.0-memgraph-3.0
     container_name: memgraph-container
     ports:
-      - "7687:7687" # Bolt protocol for queries and GQLAlchemy
-      - "7444:7444"
+      - "${MEMGRAPH_PORT:-7687}:7687"
     volumes:
       - memgraph-data:/var/lib/memgraph
 
@@ -47,7 +56,7 @@ services:
     image: memgraph/lab:3.0.1
     container_name: memgraph-lab-container
     ports:
-      - "3000:3000" # Memgraph Lab UI
+      - "${MEMGRAPH_LAB_PORT:-3000}:3000"
     environment:
       MEMGRAPH_URI: memgraph
       MEMGRAPH_PORT: 7687
@@ -65,15 +74,15 @@ services:
       - SPARK_SSL_ENABLED=no
       - SPARK_USER=spark
     ports:
-      - "7077:7077" # Spark master service
-      - "8080:8080" # Spark master web UI
+      - "7077:7077"
+      - "8080:8080"
 
   spark-worker:
     image: bitnami/spark:3.5.4
     container_name: spark-worker
     environment:
       - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark-master:7077 # Connect to the spark-master service
+      - SPARK_MASTER_URL=spark-master:7077
       - SPARK_WORKER_MEMORY=8G
       - SPARK_WORKER_CORES=4
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
@@ -84,7 +93,7 @@ services:
     depends_on:
       - spark-master
     ports:
-      - "8081:8081" # Spark worker UI
+      - "${SPARK_WORKER_PORT:-8081}:8081"
 
 volumes:
   pg-data:
