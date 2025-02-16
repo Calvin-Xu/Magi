@@ -101,7 +101,7 @@ def create_gradio_app() -> gr.Blocks:
 
         with gr.Row():
             browse_btn = gr.Button("Browse S3", variant="primary")
-            process_btn = gr.Button("Process Text Files", variant="primary")
+            process_btn = gr.Button("Ingest Files", variant="primary")
 
         output_md = gr.Markdown("")
 

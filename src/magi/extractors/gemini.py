@@ -5,6 +5,7 @@ from typing import List, Optional
 import asyncio
 from datetime import datetime
 from dataclasses import dataclass
+import random
 
 from google import genai
 from pydantic import BaseModel
@@ -17,7 +18,7 @@ from .base import (
     ExtractionMetrics,
 )
 from ..config import GEMINI_CONFIG
-from ..services.rate_limiter import DistributedRateLimiter
+from ..services.rate_limiter import DistributedRateLimiter, RateLimit
 from .prompts import RELATIONSHIP_PROMPT
 
 
@@ -98,6 +99,16 @@ class GeminiExtractor(RelationshipExtractor):
             self._model_limits.vertex_model_id
         )
 
+        # Gemini-specific limits
+        self._rate_limit = RateLimit(
+            name="gemini-2.0-flash",
+            rpm=self._model_limits.rpm,
+            tpm=self._model_limits.tpm,
+            window_size=60,
+            num_shards=10,
+            max_concurrent=4,
+        )
+
     async def close(self):
         """Clean up resources."""
         await self._rate_limiter.close()
@@ -117,13 +128,17 @@ class GeminiExtractor(RelationshipExtractor):
             try:
                 # Get rate limit approval
                 retry_after = await self._rate_limiter.acquire(
-                    self._count_tokens_sync(prompt),
-                    self._model_limits.rpm,
-                    self._model_limits.tpm,
+                    rate_limit=self._rate_limit,
+                    tokens=self._count_tokens_sync(prompt),
                     reserve=True,
                 )
 
                 if retry_after:
+                    # Add more initial delay for first attempt
+                    if attempt == 0:
+                        retry_after += (
+                            random.random() * 30
+                        )  # Up to 30 seconds initial delay
                     await asyncio.sleep(retry_after - datetime.now().timestamp())
 
                 # Make the API call
@@ -145,11 +160,15 @@ class GeminiExtractor(RelationshipExtractor):
                     f"Error in Gemini API call (prompt hash: {hash(prompt)}) (attempt {attempt + 1}): {str(e)}"
                 )
 
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(30 * 2**attempt)
-                    continue
+                if "RESOURCE_EXHAUSTED" in str(e):
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(30 * 2**attempt)
+                        continue
 
-        # If we get here, we've either exhausted retries or hit a non-retryable error
+                # For non-rate-limit errors, fail fast
+                if "RESOURCE_EXHAUSTED" not in str(e):
+                    break
+
         raise GeminiError(
             f"Failed after {attempt + 1} attempts. Last error: {str(last_error)}"
         ) from last_error
