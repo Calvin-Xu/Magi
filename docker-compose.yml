@@ -11,6 +11,7 @@ services:
       - memgraph-lab
       - spark-master
       - spark-worker
+      - redis
     ports:
       - "${MAGI_PORT:-1998}:1998"
     volumes:
@@ -32,6 +33,8 @@ services:
       - MEMGRAPH_LAB_PORT=${MEMGRAPH_LAB_PORT:-3000}
       - SPARK_MASTER_HOST=${SPARK_MASTER_HOST:-spark-master}
       - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-8080}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
 
   postgres:
     image: pgvector/pgvector:0.8.0-pg17
@@ -96,6 +99,22 @@ services:
     ports:
       - "${SPARK_WORKER_PORT:-8081}:8081"
 
+  redis:
+    image: redis:latest
+    container_name: redis-container
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   pg-data:
   memgraph-data:
+  redis-data:

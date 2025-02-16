@@ -1,10 +1,22 @@
-"""S3 service utilities."""
+"""S3 utilities and document reading."""
 
 from dataclasses import dataclass
 from typing import Optional, AsyncIterator
 from botocore.exceptions import ClientError
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import boto3
+from pathlib import Path
 
 from .aws import AWSCredentials, create_aws_client
+from ..config import FILE_PROCESSOR_CONFIG
+from .schemas import (
+    S3Uri,
+    TextDocument,
+    DocumentBatch,
+    convert_to_text,
+    UnsupportedFileTypeError,
+)
 
 
 @dataclass
@@ -61,3 +73,89 @@ async def list_s3_objects(
         raise RuntimeError(f"AWS S3 error: {str(e)}") from e
     except Exception as e:
         raise RuntimeError(f"Error listing S3 objects: {str(e)}") from e
+
+
+class S3DocumentReader:
+    """Reads documents from S3 with batching and rate limiting."""
+
+    def __init__(
+        self,
+        s3_client: boto3.client,
+        credentials: Optional[AWSCredentials] = None,
+    ):
+        """Initialize reader."""
+        self.s3_client = s3_client
+        self.credentials = credentials
+        self.semaphore = asyncio.Semaphore(
+            FILE_PROCESSOR_CONFIG["max_concurrent_downloads"]
+        )
+        self.executor = ThreadPoolExecutor(
+            max_workers=FILE_PROCESSOR_CONFIG["max_concurrent_downloads"]
+        )
+
+    async def read_documents(
+        self,
+        base_uri: str,
+    ) -> AsyncIterator[DocumentBatch]:
+        """Read documents in batches."""
+        try:
+            current_batch: list[TextDocument] = []
+
+            async for uri in list_s3_objects(base_uri, self.credentials):
+                if doc := await fetch_and_convert_to_text(
+                    uri,
+                    self.s3_client,
+                    self.semaphore,
+                    self.executor,
+                ):
+                    current_batch.append(doc)
+
+                if len(current_batch) >= FILE_PROCESSOR_CONFIG["batch_size"]:
+                    yield DocumentBatch(documents=current_batch)
+                    current_batch = []
+
+            if current_batch:
+                yield DocumentBatch(documents=current_batch)
+
+        finally:
+            self.executor.shutdown()
+
+
+async def fetch_and_convert_to_text(
+    uri: str,
+    s3_client: boto3.client,
+    semaphore: asyncio.Semaphore,
+    executor: ThreadPoolExecutor,
+) -> Optional[TextDocument]:
+    """Fetch and convert file content to text with rate limiting."""
+    async with semaphore:  # Limit concurrent downloads
+        try:
+            s3_uri = S3Uri.parse(uri)
+
+            # Use ThreadPoolExecutor for blocking S3 operations
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                executor,
+                lambda: s3_client.get_object(Bucket=s3_uri.bucket, Key=s3_uri.prefix),
+            )
+
+            content = await loop.run_in_executor(
+                executor, lambda: response["Body"].read()
+            )
+
+            file_type = Path(uri).suffix.lstrip(".")
+
+            try:
+                text_content = convert_to_text(content, file_type)
+                return TextDocument(
+                    uri=uri,
+                    content=text_content,
+                    file_type=file_type,
+                )
+            except UnsupportedFileTypeError as e:
+                print(f"Skipping {uri}: {str(e)}")
+                return None
+
+        except Exception as e:
+            print(f"Error processing {uri}: {str(e)}")
+            return None
