@@ -17,6 +17,7 @@ services:
       - ./src:/app/src
       - ./pyproject.toml:/app/pyproject.toml
       - ./uv.lock:/app/uv.lock
+      - ./.env:/app/.env
     environment:
       - PYTHONPATH=/app/src
       - UV_PROJECT_ENVIRONMENT=/app/.venv
