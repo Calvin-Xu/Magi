@@ -1,12 +1,30 @@
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional
 import gradio as gr
 from .formatters import format_status_markdown, all_services_ok
 from ..services.checks import run_health_checks
-from ..services.s3 import S3Credentials, list_s3_objects
+from ..services.s3 import list_s3_objects
+from ..services.file_processor import process_documents
+from pyspark.sql import SparkSession
+from ..services.aws import AWSCredentials
+
+
+# Constants for display
+MAX_FIELD_LENGTH = 100  # Maximum length for content display
+MAX_ROWS_DISPLAY = 10  # Number of rows to show in UI
+
+
+def truncate_field(text: str, max_length: int = MAX_FIELD_LENGTH) -> str:
+    """Truncate text field for display."""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
 
 
 def create_gradio_app() -> gr.Blocks:
     """Create and return the Gradio interface."""
+    # Initialize Spark
+    spark = SparkSession.builder.appName("magi").getOrCreate()
+
     with gr.Blocks(title="Magi System Status", theme=gr.themes.Base()) as ui:
         # Service Status Section
         gr.Markdown("# Magi System Status")
@@ -32,8 +50,11 @@ def create_gradio_app() -> gr.Blocks:
                 type="password",
             )
 
-        browse_btn = gr.Button("Browse S3", variant="primary")
-        s3_output = gr.Markdown("Enter an S3 URI and click Browse to list objects")
+        with gr.Row():
+            browse_btn = gr.Button("Browse S3", variant="primary")
+            process_btn = gr.Button("Process Text Files", variant="primary")
+
+        output_md = gr.Markdown("Enter an S3 URI and click Browse to list objects")
 
         async def browse_s3(
             uri: str,
@@ -46,7 +67,7 @@ def create_gradio_app() -> gr.Blocks:
 
             try:
                 credentials = (
-                    S3Credentials(key_id, secret) if key_id or secret else None
+                    AWSCredentials(key_id, secret) if key_id or secret else None
                 )
 
                 objects = []
@@ -65,10 +86,64 @@ def create_gradio_app() -> gr.Blocks:
             except Exception as e:
                 return f"Error: {str(e)}"
 
+        async def process_files(
+            uri: str,
+            key_id: Optional[str],
+            secret: Optional[str],
+        ) -> str:
+            """Process text files and create Spark DataFrame."""
+            if not uri:
+                return "Please enter an S3 URI"
+
+            try:
+                credentials = (
+                    AWSCredentials(key_id, secret) if key_id or secret else None
+                )
+
+                total_documents = 0
+                first_df = None
+
+                # Process documents in batches
+                async for df in process_documents(uri, credentials, spark):
+                    batch_count = df.count()
+                    total_documents += batch_count
+
+                    # Keep first DataFrame for display
+                    if first_df is None:
+                        first_df = df
+
+                if total_documents == 0:
+                    return "No text documents found to process"
+
+                # Format results
+                result = [
+                    f"Processed {total_documents} text documents\n",
+                    "Sample of first batch:",
+                    "```",
+                ]
+
+                # Convert first few rows to pandas and format for display
+                if first_df:
+                    pdf = first_df.limit(MAX_ROWS_DISPLAY).toPandas()
+                    pdf["content"] = pdf["content"].apply(truncate_field)
+                    result.append(pdf.to_string())
+
+                result.append("```")
+                return "\n".join(result)
+
+            except Exception as e:
+                return f"Error processing files: {str(e)}"
+
         browse_btn.click(
             fn=browse_s3,
             inputs=[s3_uri, aws_key_id, aws_secret],
-            outputs=[s3_output],
+            outputs=[output_md],
+        )
+
+        process_btn.click(
+            fn=process_files,
+            inputs=[s3_uri, aws_key_id, aws_secret],
+            outputs=[output_md],
         )
 
         # Service status update handlers

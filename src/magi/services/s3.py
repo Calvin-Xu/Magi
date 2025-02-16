@@ -1,27 +1,10 @@
+"""S3 service utilities."""
+
 from dataclasses import dataclass
 from typing import Optional, AsyncIterator
-import boto3
 from botocore.exceptions import ClientError
-from ..config import AWS_CONFIG
 
-
-@dataclass
-class S3Credentials:
-    """AWS credentials configuration."""
-
-    access_key_id: Optional[str] = None
-    secret_access_key: Optional[str] = None
-
-    def is_complete(self) -> bool:
-        """Check if both credentials are provided."""
-        return bool(self.access_key_id and self.secret_access_key)
-
-    def get_effective_credentials(self) -> tuple[Optional[str], Optional[str]]:
-        """Get effective credentials, falling back to environment variables."""
-        return (
-            self.access_key_id or AWS_CONFIG["access_key_id"],
-            self.secret_access_key or AWS_CONFIG["secret_access_key"],
-        )
+from .aws import AWSCredentials, create_aws_client
 
 
 @dataclass
@@ -52,7 +35,7 @@ class S3Uri:
 
 async def list_s3_objects(
     uri: str,
-    credentials: Optional[S3Credentials] = None,
+    credentials: Optional[AWSCredentials] = None,
 ) -> AsyncIterator[str]:
     """
     List all objects under the given S3 URI.
@@ -66,35 +49,8 @@ async def list_s3_objects(
     """
     try:
         s3_uri = S3Uri.parse(uri)
+        s3_client = create_aws_client("s3", credentials)
 
-        # Get credentials (or None if not provided/configured)
-        if credentials:
-            access_key, secret_key = credentials.get_effective_credentials()
-        else:
-            # Use None so that default AWS credential chain is used
-            access_key, secret_key = None, None
-
-        # Create the session
-        session = boto3.Session(
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-        )
-
-        sts_client = session.client("sts")
-        assumed = sts_client.assume_role(
-            RoleArn=AWS_CONFIG["role_arn"],
-            RoleSessionName="magi-session",
-        )
-        creds = assumed["Credentials"]
-
-        s3_client = boto3.client(
-            "s3",
-            aws_access_key_id=creds["AccessKeyId"],
-            aws_secret_access_key=creds["SecretAccessKey"],
-            aws_session_token=creds["SessionToken"],
-        )
-
-        # List objects with pagination
         paginator = s3_client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=s3_uri.bucket, Prefix=s3_uri.prefix):
             if "Contents" in page:
