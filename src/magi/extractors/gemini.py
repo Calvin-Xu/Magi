@@ -19,7 +19,7 @@ from .base import (
 )
 from ..config import GEMINI_CONFIG
 from ..services.rate_limiter import DistributedRateLimiter, RateLimit
-from .prompts import RELATIONSHIP_PROMPT
+from .prompts import RELATIONSHIP_EXTRACTION_PROMPT
 
 
 @dataclass
@@ -183,7 +183,7 @@ class GeminiExtractor(RelationshipExtractor):
 
         try:
             # Prepare prompt with text
-            prompt = RELATIONSHIP_PROMPT.format(text=text)
+            prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(text=text)
 
             # Call Gemini API with retries and rate limiting
             response = await self._call_gemini_api(prompt)
