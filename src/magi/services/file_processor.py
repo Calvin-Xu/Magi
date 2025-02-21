@@ -12,7 +12,6 @@ from ..extractors.gemini import GeminiExtractor
 async def extract_relationships_from_text(
     text: str,
     extractor: GeminiExtractor,
-    source_uri: str,
 ) -> list[dict]:
     """Extract relationships from text using the provided extractor."""
     relationships = []
@@ -30,7 +29,7 @@ def get_extractor(model: str) -> GeminiExtractor:
 def create_relationship_extractor_udf(model: str = "gemini-2.0-flash"):
     """Create a Spark UDF for relationship extraction."""
 
-    def extract_relationships(text: str, uri: str) -> Optional[str]:
+    def extract_relationships(text: str) -> Optional[str]:
         """Wrapper for async extraction that returns JSON string."""
         # Create new event loop and extractor for this executor
         loop = asyncio.new_event_loop()
@@ -42,7 +41,7 @@ def create_relationship_extractor_udf(model: str = "gemini-2.0-flash"):
 
             # Run extraction
             relationships = loop.run_until_complete(
-                extract_relationships_from_text(text, extractor, uri)
+                extract_relationships_from_text(text, extractor)
             )
 
             # Always return a valid JSON array, even if empty

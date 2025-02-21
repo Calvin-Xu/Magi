@@ -11,7 +11,6 @@ from pathlib import Path
 from .aws import AWSCredentials, create_aws_client
 from ..config import FILE_PROCESSOR_CONFIG
 from .schemas import (
-    S3Uri,
     TextDocument,
     DocumentBatch,
     convert_to_text,

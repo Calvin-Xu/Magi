@@ -15,7 +15,7 @@ from ..services.pipeline import Pipeline
 
 
 # Constants for display
-MAX_ROWS_DISPLAY = 100  # Number of rows to show in UI
+MAX_ROWS_DISPLAY = 500  # Number of rows to show in UI
 
 
 def create_gradio_app() -> gr.Blocks:

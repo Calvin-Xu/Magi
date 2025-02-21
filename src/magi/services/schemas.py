@@ -16,32 +16,6 @@ class UnsupportedFileTypeError(Exception):
 
 
 @dataclass
-class S3Uri:
-    """Parsed S3 URI components."""
-
-    bucket: str
-    prefix: str
-
-    @classmethod
-    def parse(cls, uri: str) -> "S3Uri":
-        """Parse an S3 URI into bucket and prefix."""
-        if not uri.startswith("s3://"):
-            raise ValueError("URI must start with s3://")
-
-        # Remove s3:// prefix and split into bucket and key
-        path = uri[5:]
-        parts = path.split("/", 1)
-
-        if not parts[0]:
-            raise ValueError("No bucket specified")
-
-        bucket = parts[0]
-        prefix = parts[1] if len(parts) > 1 else ""
-
-        return cls(bucket=bucket, prefix=prefix)
-
-
-@dataclass
 class TextDocument:
     """Represents a text document with its metadata."""
 

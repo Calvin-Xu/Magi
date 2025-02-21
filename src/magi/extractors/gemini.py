@@ -151,7 +151,7 @@ class GeminiExtractor(RelationshipExtractor):
                         "response_schema": RelationshipList,
                     },
                 )
-                print(f"Response: {response.candidates[0].content}")
+                print(f"Response: {response.text}")
                 return response
 
             except Exception as e:
@@ -192,8 +192,6 @@ class GeminiExtractor(RelationshipExtractor):
             if not response or not response.candidates:
                 print(f"No valid response for prompt hash: {hash(prompt)}")
                 return []
-
-            print(f"Response: {response.candidates[0].content}")
 
             # Handle missing parsed data
             if not hasattr(response, "parsed") or not response.parsed:
