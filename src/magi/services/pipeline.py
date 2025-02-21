@@ -63,7 +63,7 @@ class RelationshipExtractorProcessor:
             ),  # Explode the array
         )
 
-        final_df = exploded_df.select(
+        extracted_relationships_df = exploded_df.select(
             "relationship.from_entity",
             "relationship.relationship_type",
             "relationship.to_entity",
@@ -76,7 +76,7 @@ class RelationshipExtractorProcessor:
             F.col("uri").alias("source_document_uri"),
         )
 
-        return final_df
+        return extracted_relationships_df
 
 
 class Pipeline:

@@ -1,5 +1,5 @@
 from ..services.status import ServiceState, service_status
-from ..services.config import SERVICE_UIS
+from .config import SERVICE_UIS
 
 
 def format_status_markdown() -> str:

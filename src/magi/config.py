@@ -58,12 +58,15 @@ class Config:
             "batch_size": int(os.getenv("MAGI_BATCH_SIZE", "1000")),
             "max_retries": int(os.getenv("MAGI_MAX_RETRIES", "3")),
         },
-        "gemini": {
-            "api_key": os.getenv("GEMINI_API_KEY"),
-        },
         "redis": {
             "host": os.getenv("REDIS_HOST", "redis"),
             "port": int(os.getenv("REDIS_PORT", "6379")),
+        },
+        "gemini": {
+            "api_key": os.getenv("GEMINI_API_KEY"),
+        },
+        "voyage_ai": {
+            "api_key": os.getenv("VOYAGE_AI_API_KEY"),
         },
     }
 
@@ -78,3 +81,4 @@ AWS_CONFIG = Config.CONFIG["aws"]
 FILE_PROCESSOR_CONFIG = Config.CONFIG["file_processor"]
 GEMINI_CONFIG = Config.CONFIG["gemini"]
 REDIS_CONFIG = Config.CONFIG["redis"]
+VOYAGE_AI_CONFIG = Config.CONFIG["voyage_ai"]

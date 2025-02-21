@@ -3,6 +3,9 @@ import gradio as gr
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import DataFrame
+import asyncpg
+from ..config import POSTGRES_CONFIG
+import pandas as pd
 
 from .formatters import format_status_markdown, all_services_ok
 from ..services.checks import run_health_checks
@@ -52,6 +55,9 @@ def create_gradio_app() -> gr.Blocks:
         output_md = gr.Markdown("")
         output_df = gr.Dataframe()
 
+        wipe_btn = gr.Button("Wipe All Data", variant="stop")
+        wipe_output = gr.Markdown("")
+
         async def browse_s3(
             uri: str,
             key_id: Optional[str],
@@ -81,6 +87,39 @@ def create_gradio_app() -> gr.Blocks:
 
             except Exception as e:
                 return f"Error: {str(e)}"
+
+        async def load_data():
+            conn = await asyncpg.connect(
+                host=POSTGRES_CONFIG["host"],
+                port=POSTGRES_CONFIG["port"],
+                user=POSTGRES_CONFIG["user"],
+                password=POSTGRES_CONFIG["password"],
+                database=POSTGRES_CONFIG["database"],
+            )
+            entities = await conn.fetch("SELECT * FROM entities;")
+            relationship_types = await conn.fetch("SELECT * FROM relationship_types;")
+            relationships = await conn.fetch("SELECT * FROM relationships;")
+            await conn.close()
+
+            return (
+                pd.DataFrame(entities),
+                pd.DataFrame(relationship_types),
+                pd.DataFrame(relationships),
+            )
+
+        async def refresh_data():
+            (
+                entities_data,
+                relationship_types_data,
+                relationships_data,
+            ) = await load_data()
+            entities_df.value = entities_data  # Update the entities DataFrame
+            relationship_types_df.value = (
+                relationship_types_data  # Update the relationship types DataFrame
+            )
+            relationships_df.value = (
+                relationships_data  # Update the relationships DataFrame
+            )
 
         async def process_files(
             uri: str,
@@ -113,7 +152,12 @@ def create_gradio_app() -> gr.Blocks:
                     return "No DataFrames were processed"
 
                 # Convert the PySpark DataFrame to a Pandas DataFrame
-                return first_df.toPandas()  # Convert to Pandas DataFrame
+                result_df = first_df.toPandas()  # Convert to Pandas DataFrame
+
+                # Refresh the data in the DataFrame components
+                await refresh_data()  # Call the refresh function
+
+                return result_df
 
             except Exception as e:
                 print(f"Pipeline error: {str(e)}")  # Debug
@@ -121,6 +165,26 @@ def create_gradio_app() -> gr.Blocks:
 
                 print(f"Traceback: {traceback.format_exc()}")  # Debug full traceback
                 return f"Error processing files: {str(e)}"
+
+        async def wipe_all_data() -> str:
+            """Wipe all data from entities, relationship_types, and relationships tables."""
+            conn = await asyncpg.connect(
+                host=POSTGRES_CONFIG["host"],
+                port=POSTGRES_CONFIG["port"],
+                user=POSTGRES_CONFIG["user"],
+                password=POSTGRES_CONFIG["password"],
+                database=POSTGRES_CONFIG["database"],
+            )
+
+            await conn.execute(
+                "TRUNCATE TABLE relationships, relationship_types, entities CASCADE;"
+            )
+            await conn.close()
+
+            return "All data wiped from tables."
+
+        async def wipe_data():
+            return await wipe_all_data()
 
         browse_btn.click(
             fn=browse_s3,
@@ -133,6 +197,20 @@ def create_gradio_app() -> gr.Blocks:
             inputs=[s3_uri, aws_key_id, aws_secret],
             outputs=[output_df],
         )
+
+        wipe_btn.click(
+            fn=wipe_data,
+            outputs=[wipe_output],
+        )
+
+        # Create DataFrame components for displaying tables
+        entities_df = gr.Dataframe(label="Entities Table")  # For entities table
+        relationship_types_df = gr.Dataframe(
+            label="Relationship Types Table"
+        )  # For relationship types table
+        relationships_df = gr.Dataframe(
+            label="Relationships Table"
+        )  # For relationships table
 
         # Service status update handlers
         async def async_update() -> Tuple[str, str]:

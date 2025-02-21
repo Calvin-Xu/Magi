@@ -1,18 +1,18 @@
 RELATIONSHIP_EXTRACTION_PROMPT = """
 You are an AI assistant specialized in extracting identifying significant and specific entities and their relationships in context.
-Analyze the following text, extract relationship triples `subject-predicate-object` and return them in a structured JSON format.
+You would analyze a text, extract relationship triples `subject-predicate-object` and return them in a structured JSON format.
 
 Three categories of relationships triples are allowed:
 1. <universal -[predicate]- universal> ("human - is a - mammal")
 2. <instance -[predicate]- universal> ("Socrates - is a - human")
 3. <instance -[predicate]- instance> ("Socrates - taught - Plato")
 
-Instances must have specifically identifiable names without references to the orignal context; for example, "Triple Entente - triggered - World War I" is valid and "the alliance - triggered - war" is not. References using "the" or determiners should be resolved to specific names.
+Instances must be named and identifiable outside the orignal context; for example, "Triple Entente - triggered - World War I" is valid and "the alliance - triggered - war" is not. Do not extract a <universal -[predicate]- universal> triple from a quote about historical instances.
 
 For each triple, extract the following information:
 1. subject
 2. subject_description
-   - A globally unique, disambiguating description of the subject (including aliases, distinguishing attributes, etc.).
+   - A globally unique, disambiguating description of the subject (including aliases, distinguishing attributes, etc.) that begins with subject's name; instance names must still be specifically identifiable despite the description.
 3. object
 4. object_description
 5. predicate
@@ -23,12 +23,14 @@ For each triple, extract the following information:
 8. reason
    - A concise explanation, citing key excerpts from the text, to justify why this relationship is supported.
 9. is_causal
-   - Whether the relationship is causal and between random variables. Answer with "yes" or "no".
+   - Whether the predicate describes a causal link between numeric random variables. Answer with "yes" or "no".
 
 Additional Guidelines:
 - Semantic Clarity: Subject-predicate-object should form a coherent sentence, though elements like articles can be dropped for brevity. Indirect objects can be included in the predicate if absolutely necessary.
+  - a reference using "the" must either be resolved to a specific named entity
 - Predicate Management: Use standard predicates instead of quoting the source text and creating new ones unnecessarily. Prefer single verbs and only use concise custom predicates when no standard term applies.
 - Confidence: Only extract relationships you can confidently infer from the text.
+- Validation: Refer to your subject description and object description to determine whether they are univeral or instance entities. Avoid triples in the form of <universal -[predicate]- instance>.
 
 Example Outputs:
 ```json
@@ -42,7 +44,8 @@ Example Outputs:
       "predicate": "founded",
       "predicate_description": "Founded indicates that the subject was responsible for establishing or creating the object.",
       "conditional_constraint": "in 27 BC",
-      "reason": "The text states that Gaius Julius Caesar Augustus, known as Octavian, was the founder of the Roman Empire and became its first emperor in 27 BC."
+      "reason": "The text states that “Gaius Julius Caesar Augustus, known as Octavian, was the founder of the Roman Empire and became its first emperor in 27 BC.”"
+      "is_causal": "no"
     }},
   ]
 }}
@@ -57,8 +60,8 @@ Example Outputs:
       "object_description": "The TRPV5 and TRPV6 (transient receptor potential vanilloid type 5 and 6) channels are highly Ca²⁺-selective ion channels primarily involved in calcium absorption and homeostasis.",
       "predicate": "increases",
       "predicate_description": "Increases indicates that the subject enhances or promotes the function, activity, or efficacy of the object.",
-      "conditional_constraint": "The relationship holds in intact Jurkat T cells with functional intracellular trafficking. The text states, “alkalization of the solution did not affect TRPV5/V6 channel activity in isolated patches, though it did increase channel activity in intact cells.” Experiments were conducted at room temperature (22 - 23°C) between 2013 and 2016.",
-      "reason": "Alkaline pH increases TRPV5/V6 channel activity by promoting their plasma membrane delivery, enhancing Ca²⁺ influx in Jurkat T cells. The text states, “extracellular alkalization results in a rapid elevation of the TRPV5 delivery rate to the plasma membrane” and “alkalization of the external solution in Jurkat T cells resulted in a significant increase in [Ca²⁺]i.”",
+      "conditional_constraint": "The relationship holds in intact Jurkat T cells with functional intracellular trafficking: “alkalization of the solution did not affect TRPV5/V6 channel activity in isolated patches, though it did increase channel activity in intact cells.” Experiments were conducted at room temperature (22 - 23°C) between 2013 and 2016.",
+      "reason": "Alkaline pH increases TRPV5/V6 channel activity by promoting their plasma membrane delivery, enhancing Ca²⁺ influx in Jurkat T cells: “extracellular alkalization results in a rapid elevation of the TRPV5 delivery rate to the plasma membrane” and “alkalization of the external solution in Jurkat T cells resulted in a significant increase in [Ca²⁺]i.”",
       "is_causal": "yes"
     }}
   ]

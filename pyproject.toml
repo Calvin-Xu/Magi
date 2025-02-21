@@ -19,6 +19,8 @@ dependencies = [
     "google-cloud-aiplatform[tokenization]>=1.80.0",
     "google-genai>=1.2.0",
     "redis>=5.0.1",
+    "voyageai>=0.3.2",
+    "transformers>=4.49.0",
 ]
 
 [project.optional-dependencies]
