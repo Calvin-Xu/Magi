@@ -1,32 +1,34 @@
 RELATIONSHIP_EXTRACTION_PROMPT = """
-Analyze the following text and extract relationships between entities. Your task is to extract relationship triples `subject-predicate-object` and return them in a structured JSON format.
-For each relationship you find, extract the following:
+You are an AI assistant specialized in extracting identifying significant and specific entities and their relationships in context.
+Analyze the following text, extract relationship triples `subject-predicate-object` and return them in a structured JSON format.
 
+Three categories of relationships triples are allowed:
+1. <universal -[predicate]- universal> ("human - is a - mammal")
+2. <instance -[predicate]- universal> ("Socrates - is a - human")
+3. <instance -[predicate]- instance> ("Socrates - taught - Plato")
+
+Instances must have specifically identifiable names without references to the orignal context; for example, "Triple Entente - triggered - World War I" is valid and "the alliance - triggered - war" is not. References using "the" or determiners should be resolved to specific names.
+
+For each triple, extract the following information:
 1. subject
-   - The name of the source entity.
 2. subject_description
    - A globally unique, disambiguating description of the subject (including aliases, distinguishing attributes, etc.).
 3. object
-   - The name of the target entity.
 4. object_description
-   - A globally unique, disambiguating description of the object.
 5. predicate
    - A short label describing the relationship between the subject and object. Use established relationship types (e.g., "is a", "part of", "has a", "has property", "created", etc.) where possible.
 6. predicate_description
-   - A globally unique identifying description for this predicate.
 7. constraint_condition
-   - A concise description of the conditions under which the relationship holds (if it does not universally hold) according to the text; for temporal constraints, include specific datetimes.
+   - A concise description of the conditions under which the statement formed by `subject-predicate-object` holds if it is not always true (in which case write "None"); for temporal constraints, include the most datetimes available;
 8. reason
    - A concise explanation, citing key excerpts from the text, to justify why this relationship is supported.
 9. is_causal
    - Whether the relationship is causal and between random variables. Answer with "yes" or "no".
 
-Additional Instructions:
-- Semantic Clarity: Subject-predicate-object should form a coherent sentence, though elements like articles can be dropped for brevity.
-- Finding Causal Relationships: Pay special attention to causal relationships and their directionality as indicated by the text.
-- Predicate Management: Use standard predicates instead of creating new ones unnecessarily. Use concise custom predicates only when no standard term applies.
+Additional Guidelines:
+- Semantic Clarity: Subject-predicate-object should form a coherent sentence, though elements like articles can be dropped for brevity. Indirect objects can be included in the predicate if absolutely necessary.
+- Predicate Management: Use standard predicates instead of quoting the source text and creating new ones unnecessarily. Prefer single verbs and only use concise custom predicates when no standard term applies.
 - Confidence: Only extract relationships you can confidently infer from the text.
-- Output Format: Return a JSON object with a key `"relationships"` whose value is an array of relationship objects, each containing the keys specified above.
 
 Example Outputs:
 ```json

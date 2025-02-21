@@ -231,10 +231,9 @@ class GeminiExtractor(RelationshipExtractor):
                         to_entity_description=rel.object_description,
                         relationship_type=rel.predicate,
                         relationship_description=rel.predicate_description,
-                        constraint_condition=constraint,
+                        constraint_condition="" if constraint == "None" else constraint,
                         reason=rel.reason,
                         is_causal=rel.is_causal.lower() == "yes",
-                        source_document="",  # Will be populated by Spark DataFrame
                     )
                 )
             return relationships

@@ -47,13 +47,36 @@ class RelationshipExtractorProcessor:
         await asyncio.to_thread(df_with_json.count)
 
         # Now do the JSON parsing
-        return df_with_json.withColumn(
+        df_with_relationships = df_with_json.withColumn(
             "extracted_relationships",
             F.from_json(
                 F.col("relationships_json"),
                 ArrayType(RELATIONSHIP_SCHEMA),
             ),
         )
+
+        # Explode the extracted relationships into separate rows
+        exploded_df = df_with_relationships.select(
+            "uri",  # Keep the document URI
+            F.explode("extracted_relationships").alias(
+                "relationship"
+            ),  # Explode the array
+        )
+
+        final_df = exploded_df.select(
+            "relationship.from_entity",
+            "relationship.relationship_type",
+            "relationship.to_entity",
+            "relationship.constraint_condition",
+            "relationship.reason",
+            "relationship.is_causal",
+            "relationship.from_entity_description",
+            "relationship.to_entity_description",
+            "relationship.relationship_description",
+            F.col("uri").alias("source_document_uri"),
+        )
+
+        return final_df
 
 
 class Pipeline:

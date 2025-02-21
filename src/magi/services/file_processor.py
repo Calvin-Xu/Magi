@@ -17,9 +17,6 @@ async def extract_relationships_from_text(
     """Extract relationships from text using the provided extractor."""
     relationships = []
     async for rel in extractor.extract_relationships(text):
-        # Set source document
-        rel.source_document = source_uri
-        # Convert to dict for Spark
         relationships.append(rel.model_dump())
     return relationships
 
