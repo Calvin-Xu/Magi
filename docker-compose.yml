@@ -1,27 +1,18 @@
 services:
-  magi:
+  magi-backend:
     build:
       context: .
       dockerfile: Dockerfile
-      target: dev
-    container_name: magi-container
-    depends_on:
-      - postgres
-      - memgraph
-      - memgraph-lab
-      - spark-master
-      - spark-worker
-      - redis
+    container_name: magi-backend
     ports:
-      - "${MAGI_PORT:-1998}:1998"
+      - "${MAGI_PORT:-8000}:8000"
     volumes:
-      - ./src:/app/src
-      - ./pyproject.toml:/app/pyproject.toml
-      - ./uv.lock:/app/uv.lock
-      - ./.env:/app/.env
+      - ./backend/src:/app/src
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      - ./backend/uv.lock:/app/uv.lock
+      - .env:/app/.env
     environment:
-      - PYTHONPATH=/app/src
-      - UV_PROJECT_ENVIRONMENT=/app/.venv
+      - UVICORN_ENV=dev
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-magidb}
@@ -31,10 +22,29 @@ services:
       - MEMGRAPH_PORT=${MEMGRAPH_PORT:-7687}
       - MEMGRAPH_LAB_HOST=${MEMGRAPH_LAB_HOST:-memgraph-lab}
       - MEMGRAPH_LAB_PORT=${MEMGRAPH_LAB_PORT:-3000}
-      - SPARK_MASTER_HOST=${SPARK_MASTER_HOST:-spark-master}
-      - SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-8080}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+    command: uvicorn magi.main:app --reload --host 0.0.0.0 --port ${MAGI_PORT:-8000}
+    depends_on:
+      - magi-frontend
+      - postgres
+      - memgraph
+      - memgraph-lab
+      - redis
+
+  magi-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    container_name: magi-frontend
+    ports:
+      - "5173:5173"             # Vite dev server
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      - VITE_API_BASE_URL=http://magi-backend:8000
 
   postgres:
     image: pgvector/pgvector:0.8.0-pg17
@@ -66,38 +76,6 @@ services:
       MEMGRAPH_PORT: 7687
     depends_on:
       - memgraph
-
-  spark-master:
-    image: bitnami/spark:3.5.4
-    container_name: spark-master
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-      - SPARK_USER=spark
-    ports:
-      - "7077:7077"
-      - "8080:8080"
-
-  spark-worker:
-    image: bitnami/spark:3.5.4
-    container_name: spark-worker
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark-master:7077
-      - SPARK_WORKER_MEMORY=8G
-      - SPARK_WORKER_CORES=4
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-      - SPARK_RPC_ENCRYPTION_ENABLED=no
-      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
-      - SPARK_SSL_ENABLED=no
-      - SPARK_USER=spark
-    depends_on:
-      - spark-master
-    ports:
-      - "${SPARK_WORKER_PORT:-8081}:8081"
 
   redis:
     image: redis:latest

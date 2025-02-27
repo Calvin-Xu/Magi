@@ -1,19 +1,7 @@
 #!/usr/bin/env sh
-set -e
 
-# Optional: Debug / verbose mode
-# set -x
+# Optionally, ensure we execute from the /app directory
+cd /app
 
-PATH=/app/bin:$PATH
-
-echo "Running basic Python checks..."
-python -V
-python -Ic 'import magi'
-
-if [ $# -gt 0 ]; then
-  echo "Executing user-provided command: $*"
-  exec "$@"
-else
-  echo "No command provided; running python -m magi.main"
-  exec python -m magi.main
-fi
+# Start the Uvicorn server (or relevant startup command)
+exec uvicorn magi.main:app --host 0.0.0.0 --port 8000

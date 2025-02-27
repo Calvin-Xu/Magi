@@ -2,8 +2,9 @@ import asyncio
 import aiohttp
 import asyncpg
 from gqlalchemy import Memgraph
-from ..config import POSTGRES_CONFIG, MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG, SPARK_CONFIG
+from ..config import POSTGRES_CONFIG, MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG
 from .status import ServiceState, service_status
+from pyspark.sql import SparkSession
 
 
 async def check_memgraph(
@@ -49,47 +50,28 @@ async def check_postgres(
         )
 
 
-async def check_spark(
-    master_host: str = SPARK_CONFIG["master_host"],
-    master_port: int = SPARK_CONFIG["master_port"],
-    worker_host: str = SPARK_CONFIG["worker_host"],
-    worker_port: int = SPARK_CONFIG["worker_port"],
-) -> None:
-    """Check Spark master and worker health via their HTTP endpoints."""
-    async with aiohttp.ClientSession() as session:
-        # Check master
-        master_url = f"http://{master_host}:{master_port}"
-        try:
-            async with session.get(master_url) as response:
-                if response.status == 200:
-                    service_status.update(
-                        "spark_master",
-                        ServiceState.OK,
-                        f"Connected to Spark master at {master_url}",
-                    )
-                else:
-                    error_msg = f"Spark master returned status {response.status}"
-                    service_status.update("spark_master", ServiceState.ERROR, error_msg)
-        except Exception as e:
-            error_msg = f"Could not connect to Spark master: {str(e)}"
-            service_status.update("spark_master", ServiceState.ERROR, error_msg)
+async def check_spark() -> None:
+    """Check Spark local mode is running."""
+    try:
+        # Create a test SparkSession to verify local mode is working
+        spark = (
+            SparkSession.builder.appName("magi-health-check")
+            .master("local[*]")
+            .getOrCreate()
+        )
+        # Run a simple test computation
+        test_df = spark.createDataFrame([(1,)], ["test"])
+        test_df.count()
 
-        # Check worker
-        worker_url = f"http://{worker_host}:{worker_port}"
-        try:
-            async with session.get(worker_url) as response:
-                if response.status == 200:
-                    service_status.update(
-                        "spark_worker",
-                        ServiceState.OK,
-                        f"Connected to Spark worker at {worker_url}",
-                    )
-                else:
-                    error_msg = f"Spark worker returned status {response.status}"
-                    service_status.update("spark_worker", ServiceState.ERROR, error_msg)
-        except Exception as e:
-            error_msg = f"Could not connect to Spark worker: {str(e)}"
-            service_status.update("spark_worker", ServiceState.ERROR, error_msg)
+        service_status.update(
+            "spark_local",
+            ServiceState.OK,
+            "Spark local mode is running",
+        )
+        # Don't stop the session as it might be shared
+    except Exception as e:
+        error_msg = f"Could not initialize Spark local mode: {str(e)}"
+        service_status.update("spark_local", ServiceState.ERROR, error_msg)
 
 
 async def check_memgraph_lab(

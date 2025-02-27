@@ -1,7 +1,7 @@
 [project]
 name = "magi"
 version = "0.1.0"
-description = "LLM-powered Ontology Builder"
+description = "LLM-powered Ontology Creation & Analysis"
 authors = [{ name = "Pinlin [Calvin] Xu" }]
 requires-python = ">=3.11"
 dependencies = [

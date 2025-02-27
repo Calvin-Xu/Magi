@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from typing import Optional
 import boto3
-from botocore.exceptions import ClientError
 
 from ..config import AWS_CONFIG
 

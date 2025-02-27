@@ -1,7 +1,6 @@
 from typing import Tuple, Optional
 import gradio as gr
 from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
 from pyspark.sql import DataFrame
 import asyncpg
 from ..config import POSTGRES_CONFIG
@@ -21,7 +20,7 @@ MAX_ROWS_DISPLAY = 500  # Number of rows to show in UI
 def create_gradio_app() -> gr.Blocks:
     """Create and return the Gradio interface."""
     # Initialize Spark
-    spark = SparkSession.builder.appName("magi").getOrCreate()
+    spark = SparkSession.builder.appName("magi").master("local[*]").getOrCreate()
 
     with gr.Blocks(title="Magi System Status", theme=gr.themes.Base()) as ui:
         # Service Status Section
@@ -134,7 +133,7 @@ def create_gradio_app() -> gr.Blocks:
                 credentials = (
                     AWSCredentials(key_id, secret) if key_id or secret else None
                 )
-                pipeline = Pipeline(credentials=credentials)
+                pipeline = Pipeline(spark, credentials=credentials)
 
                 total_documents = 0
                 first_df = None

@@ -127,13 +127,12 @@ class Pipeline:
 
     def __init__(
         self,
+        spark: SparkSession,
         credentials: Optional[AWSCredentials] = None,
-        spark: Optional[SparkSession] = None,
         model: str = "gemini-2.0-flash",
     ):
         """Initialize pipeline."""
-        # Initialize Spark
-        self.spark = spark or SparkSession.builder.appName("magi").getOrCreate()
+        self.spark = spark
 
         # Initialize S3 reader
         s3_client = create_aws_client("s3", credentials)

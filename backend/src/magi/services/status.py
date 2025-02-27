@@ -39,8 +39,7 @@ class ServiceStatus:
         self._status = {
             "memgraph": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
             "postgres_(pgvector)": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
-            "spark_master": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
-            "spark_worker": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
+            "spark_local": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
             "memgraph_lab": ServiceInfo(ServiceState.UNKNOWN, "Not checked yet"),
         }
 

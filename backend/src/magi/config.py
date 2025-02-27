@@ -37,12 +37,6 @@ class Config:
             "host": os.getenv("MEMGRAPH_LAB_HOST", "memgraph-lab"),
             "port": int(os.getenv("MEMGRAPH_LAB_PORT", "3000")),
         },
-        "spark": {
-            "master_host": os.getenv("SPARK_MASTER_HOST", "spark-master"),
-            "master_port": int(os.getenv("SPARK_MASTER_PORT", "8080")),
-            "worker_host": os.getenv("SPARK_WORKER_HOST", "spark-worker"),
-            "worker_port": int(os.getenv("SPARK_WORKER_PORT", "8081")),
-        },
         "magi": {
             "port": int(os.getenv("MAGI_PORT", "1998")),
         },
@@ -75,7 +69,6 @@ class Config:
 POSTGRES_CONFIG = Config.CONFIG["postgres"]
 MEMGRAPH_CONFIG = Config.CONFIG["memgraph"]
 MEMGRAPH_LAB_CONFIG = Config.CONFIG["memgraph_lab"]
-SPARK_CONFIG = Config.CONFIG["spark"]
 MAGI_CONFIG = Config.CONFIG["magi"]
 AWS_CONFIG = Config.CONFIG["aws"]
 FILE_PROCESSOR_CONFIG = Config.CONFIG["file_processor"]
