@@ -40,6 +40,12 @@ MODEL_LIMITS = {
         input_token_limit=1_048_576,
         vertex_model_id="gemini-1.5-flash-002",  # TODO: 2.0 tokenizer not supported yet
     ),
+    "gemini-2.0-flash-thinking-exp": ModelLimits(
+        rpm=10,
+        tpm=4_000_000,
+        input_token_limit=1_048_576,
+        vertex_model_id="gemini-1.5-flash-002",  # TODO: 2.0 tokenizer not supported yet
+    ),
 }
 
 
@@ -73,8 +79,8 @@ class GeminiExtractor(RelationshipExtractor):
 
     def __init__(
         self,
-        model: str = "gemini-2.0-flash",
-        max_concurrent_requests: int = 5,
+        model: str,
+        max_concurrent_requests: int = 10000,  # we have rate limiter
         max_retries: int = 5,
     ):
         """Initialize the Gemini extractor."""

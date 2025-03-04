@@ -82,7 +82,7 @@ class RelationshipExtractor(ABC):
         self,
         model: str,
         max_input_tokens: int,
-        max_concurrent_requests: int = 5,
+        max_concurrent_requests: int = 100000,  # should have a separate rate-limiter
     ):
         """Initialize the extractor.
 

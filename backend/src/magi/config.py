@@ -62,6 +62,12 @@ class Config:
         "voyage_ai": {
             "api_key": os.getenv("VOYAGE_AI_API_KEY"),
         },
+        "openai": {
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+        "openrouter": {
+            "api_key": os.getenv("OPENROUTER_API_KEY"),
+        },
     }
 
 
@@ -75,3 +81,5 @@ FILE_PROCESSOR_CONFIG = Config.CONFIG["file_processor"]
 GEMINI_CONFIG = Config.CONFIG["gemini"]
 REDIS_CONFIG = Config.CONFIG["redis"]
 VOYAGE_AI_CONFIG = Config.CONFIG["voyage_ai"]
+OPENAI_CONFIG = Config.CONFIG["openai"]
+OPENROUTER_CONFIG = Config.CONFIG["openrouter"]

@@ -54,3 +54,4 @@ class Relationship:
     SOURCE_DOCUMENT_URI_COLUMN: str = "source_document_uri"
     FROM_ENTITY_HASH_COLUMN: str = "from_entity_hash"
     TO_ENTITY_HASH_COLUMN: str = "to_entity_hash"
+    RELATIONSHIP_TYPE_HASH_COLUMN: str = "relationship_type_hash"
