@@ -12,10 +12,10 @@ class DocumentProcessor(ABC):
     async def process(self, df: DataFrame) -> DataFrame:
         """
         Process a DataFrame of documents.
-        
+
         Args:
             df: DataFrame to process
-            
+
         Returns:
             Processed DataFrame
         """

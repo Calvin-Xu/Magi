@@ -1,10 +1,12 @@
 import asyncio
+
 import aiohttp
 import asyncpg
 from gqlalchemy import Memgraph
-from ..config import POSTGRES_CONFIG, MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG
-from .status import ServiceState, service_status
 from pyspark.sql import SparkSession
+
+from magi.config import MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG, POSTGRES_CONFIG
+from .status import ServiceState, service_status
 
 
 async def check_memgraph(

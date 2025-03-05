@@ -53,3 +53,8 @@ dev = [
 
 [tool.ruff]
 line-length = 88
+
+[tool.ruff.lint]
+extend-select = [
+    "TID252"
+]

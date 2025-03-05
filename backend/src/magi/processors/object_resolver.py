@@ -1,18 +1,17 @@
 """Processor for entity and relationship resolution."""
 
+from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
 import asyncpg
 import pandas as pd
 from pyspark.sql import DataFrame
 
-from ..embedders.base import EmbeddingProvider
-from ..resolvers.base import Resolver
-from ..services.models import Entity, Relationship, RelationshipType
-from ..utils import get_logger, log_async_function_call
+from magi.embedders.base import EmbeddingProvider
+from magi.resolvers.base import Resolver
+from magi.services.models import Entity, Relationship, RelationshipType
+from magi.utils import get_logger, log_async_function_call
 from .base import DocumentProcessor
-
-from dataclasses import dataclass
 
 # Create a logger for this module
 logger = get_logger(__name__)
@@ -108,9 +107,7 @@ class ObjectResolutionProcessor(DocumentProcessor):
 
         try:
             # Compute embeddings for valid descriptions
-            embeddings = await self.embedding_provider.get_embeddings(
-                valid_descriptions
-            )
+            embeddings = await self.embedding_provider.embed(valid_descriptions)
 
             # Create a mapping from original index to embedding
             result = []

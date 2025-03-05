@@ -1,6 +1,6 @@
+import threading
 from dataclasses import dataclass
 from enum import Enum, auto
-import threading
 from typing import Dict, NamedTuple
 
 

@@ -2,9 +2,10 @@
 
 from dataclasses import dataclass
 from typing import Optional
+
 import boto3
 
-from ..config import AWS_CONFIG
+from magi.config import AWS_CONFIG
 
 
 @dataclass

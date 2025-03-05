@@ -14,14 +14,13 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from magi.utils import (
-    get_logger,
-    set_global_log_level,
-    enable_logging,
     disable_logging,
-    log_function_call,
+    enable_logging,
+    get_logger,
     log_async_function_call,
+    log_function_call,
+    set_global_log_level,
 )
-
 
 # Create a logger for this module
 logger = get_logger(__name__)
@@ -82,7 +81,7 @@ async def main():
     # Re-enable logging
     print("\n4. Testing with logging re-enabled:")
     enable_logging()
-    set_global_log_level(logging.INFO)
+    set_global_log_level(logging.DEBUG)
     result6 = test_sync_function("test6", 999)
     print(f"Sync result: {result6}")
 

@@ -1,5 +1,5 @@
-from ..services.status import ServiceState, service_status
-from .config import SERVICE_UIS
+from magi.services.status import ServiceState, service_status
+from magi.ui.config import SERVICE_UIS
 
 
 def format_status_markdown() -> str:

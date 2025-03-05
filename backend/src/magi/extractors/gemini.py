@@ -1,24 +1,24 @@
 """Gemini-based relationship extractor."""
 
-import re
-from typing import List, Optional
 import asyncio
-from datetime import datetime
-from dataclasses import dataclass
 import random
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List, Optional
 
 from google import genai
 from pydantic import BaseModel
 from vertexai.preview import tokenization
 
+from magi.config import GEMINI_CONFIG
+from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
 from .base import (
+    ExtractionMetrics,
     RelationshipExtractor,
     RelationshipTriple,
     TextChunk,
-    ExtractionMetrics,
 )
-from ..config import GEMINI_CONFIG
-from ..services.rate_limiter import DistributedRateLimiter, RateLimit
 from .prompts import RELATIONSHIP_EXTRACTION_PROMPT
 
 

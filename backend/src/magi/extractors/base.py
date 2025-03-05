@@ -1,10 +1,10 @@
 """Base classes for relationship extractors."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, List
-import asyncio
 from datetime import datetime
+from typing import AsyncIterator, List
 
 from pydantic import BaseModel, Field
 

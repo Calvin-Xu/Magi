@@ -7,7 +7,7 @@ from typing import Optional
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType
 
-from ..extractors.gemini import GeminiExtractor
+from magi.extractors.gemini import GeminiExtractor
 
 
 async def extract_relationships_from_text(

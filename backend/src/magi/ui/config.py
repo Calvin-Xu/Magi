@@ -1,4 +1,4 @@
-from typing import Dict, Optional, NamedTuple
+from typing import Dict, NamedTuple, Optional
 
 
 class ServiceUI(NamedTuple):

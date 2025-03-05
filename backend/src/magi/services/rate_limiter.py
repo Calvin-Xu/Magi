@@ -1,12 +1,14 @@
 """Rate limiting utilities using Redis."""
 
 import asyncio
-from datetime import datetime, timedelta
 import json
 import random
-from typing import Optional, Tuple, Dict
+from datetime import datetime, timedelta
+from typing import Dict, Optional, Tuple
+
 import redis.asyncio as redis
-from ..config import REDIS_CONFIG
+
+from magi.config import REDIS_CONFIG
 
 
 class RateLimit:

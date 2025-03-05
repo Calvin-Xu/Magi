@@ -1,8 +1,10 @@
-from .base import EmbeddingProvider
 from typing import List, Optional
+
 import voyageai
-from ..config import VOYAGE_AI_CONFIG
-from ..services.rate_limiter import DistributedRateLimiter, RateLimit
+
+from magi.config import VOYAGE_AI_CONFIG
+from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from .base import EmbeddingProvider
 
 
 class VoyageEmbeddingProvider(EmbeddingProvider):
@@ -34,7 +36,7 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
     async def embed(
         self,
         texts: List[str],
-        truncation: bool,
+        truncation: bool = True,
         output_dimension: int = 1024,
         query_prompt: Optional[str] = None,
         embed_prompt: Optional[str] = None,

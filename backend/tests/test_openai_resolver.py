@@ -5,16 +5,16 @@ This script demonstrates how to use the OpenAIResolver for entity and relationsh
 """
 
 import asyncio
-from magi.services.create_tables import reset_database
-from dotenv import load_dotenv
+
 import asyncpg
 import pytest
+from dotenv import load_dotenv
 
+from magi.config import OPENAI_CONFIG, POSTGRES_CONFIG, VOYAGE_AI_CONFIG
 from magi.embedders.voyage import VoyageEmbeddingProvider
 from magi.resolvers.openai_resolver import OpenAIResolver
+from magi.services.create_tables import reset_database
 from magi.services.models import Entity, RelationshipType
-from magi.config import POSTGRES_CONFIG, VOYAGE_AI_CONFIG, OPENAI_CONFIG
-
 
 # Load environment variables from .env file
 load_dotenv()

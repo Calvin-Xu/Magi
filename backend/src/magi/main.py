@@ -1,5 +1,6 @@
 # src/magi/main.py
 import uvicorn
+
 from .api.server import create_app
 
 app = create_app()

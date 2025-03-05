@@ -6,16 +6,10 @@ from typing import AsyncIterator, Optional
 import asyncpg
 from pyspark.sql import DataFrame, SparkSession
 
-from ..embedders.voyage import VoyageEmbeddingProvider
-from ..processors import (
-    ObjectResolutionProcessor,
-    RelationshipExtractorProcessor,
-)
-from ..processors.base import DocumentProcessor
-from ..processors.object_resolver import ObjectResolutionProcessor
-from ..processors.relationship_extractor import RelationshipExtractorProcessor
-from ..resolvers import Resolver, OpenAIResolver
-from ..utils import get_logger, set_global_log_level
+from magi.embedders.voyage import VoyageEmbeddingProvider
+from magi.processors import ObjectResolutionProcessor, RelationshipExtractorProcessor
+from magi.resolvers import OpenAIResolver, Resolver
+from magi.utils import get_logger, set_global_log_level
 from .aws import AWSCredentials, create_aws_client
 from .models import Entity, RelationshipType
 from .s3 import DocumentBatch, S3DocumentReader
@@ -36,7 +30,7 @@ class Pipeline:
         rel_type_resolver: Optional[Resolver[RelationshipType]] = None,
         credentials: Optional[AWSCredentials] = None,
         model: str = "gemini-2.0-flash",
-        log_level: int = logging.INFO,
+        log_level: int = logging.DEBUG,
     ):
         """
         Initialize pipeline.

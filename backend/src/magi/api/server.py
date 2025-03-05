@@ -1,12 +1,14 @@
+import os
+from contextlib import asynccontextmanager
+
+import asyncpg
+import gradio as gr
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import gradio as gr
-import os
-from ..ui.app import create_gradio_app
-from ..services.create_tables import create_tables, reset_database
-from contextlib import asynccontextmanager
-from ..config import POSTGRES_CONFIG
-import asyncpg
+
+from magi.config import POSTGRES_CONFIG
+from magi.services.create_tables import create_tables, reset_database
+from magi.ui.app import create_gradio_app
 
 
 @asynccontextmanager

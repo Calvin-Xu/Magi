@@ -11,16 +11,15 @@ import asyncpg
 import numpy as np
 
 from magi.resolvers.models import ObjectWithEmbedding
-from ..utils import get_logger, log_async_function_call
 
-from ..embedders.base import EmbeddingProvider
-from .models import (
-    SimilarObject,
+from magi.embedders.base import EmbeddingProvider
+from magi.utils import get_logger, log_async_function_call
+from magi.resolvers.models import (
     ObjectPair,
-    VerificationResult,
     ProcessedObject,
+    SimilarObject,
+    VerificationResult,
 )
-
 
 # Create a logger for this module
 logger = get_logger(__name__)

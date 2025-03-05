@@ -1,20 +1,21 @@
 """S3 utilities and document reading."""
 
-from dataclasses import dataclass
-from typing import Optional, AsyncIterator
-from botocore.exceptions import ClientError
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import boto3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import AsyncIterator, Optional
 
-from .aws import AWSCredentials, create_aws_client
-from ..config import FILE_PROCESSOR_CONFIG
-from .schemas import (
-    TextDocument,
+import boto3
+from botocore.exceptions import ClientError
+
+from magi.config import FILE_PROCESSOR_CONFIG
+from magi.services.aws import AWSCredentials, create_aws_client
+from magi.services.schemas import (
     DocumentBatch,
-    convert_to_text,
+    TextDocument,
     UnsupportedFileTypeError,
+    convert_to_text,
 )
 
 

@@ -1,12 +1,8 @@
 """Schemas for data structures used in Magi."""
 
 from dataclasses import dataclass
-from pyspark.sql.types import (
-    StructType,
-    StructField,
-    StringType,
-    BooleanType,
-)
+
+from pyspark.sql.types import BooleanType, StringType, StructField, StructType
 
 
 class UnsupportedFileTypeError(Exception):

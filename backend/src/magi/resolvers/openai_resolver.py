@@ -3,19 +3,18 @@ OpenAI implementation of the Resolver class for entity and relationship type res
 This resolver uses OpenAI's LLM capabilities to verify if objects are the same.
 """
 
-from typing import List, Optional, TypeVar
 import asyncio
-from pydantic import BaseModel, Field
-from openai import OpenAI
-import tiktoken
+from typing import List, Optional, TypeVar
 
-from ..config import OPENAI_CONFIG
+import tiktoken
+from openai import OpenAI
+from pydantic import BaseModel, Field
+
+from magi.config import OPENAI_CONFIG
+from magi.services.models import Entity, RelationshipType
 from .base import Resolver
-from ..services.models import Entity, RelationshipType
-from .models import (
-    ObjectPair,
-    VerificationResult as ModelVerificationResult,
-)
+from .models import ObjectPair
+from .models import VerificationResult as ModelVerificationResult
 
 T = TypeVar("T", Entity, RelationshipType)
 

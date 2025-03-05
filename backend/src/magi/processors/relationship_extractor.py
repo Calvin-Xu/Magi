@@ -9,9 +9,9 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType
 from pyspark.storagelevel import StorageLevel
 
-from ..services.file_processor import create_relationship_extractor_udf
-from ..services.models import Relationship
-from ..services.schemas import RELATIONSHIP_SCHEMA
+from magi.services.file_processor import create_relationship_extractor_udf
+from magi.services.models import Relationship
+from magi.services.schemas import RELATIONSHIP_SCHEMA
 from .base import DocumentProcessor
 
 

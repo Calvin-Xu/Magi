@@ -1,18 +1,18 @@
-from typing import Tuple, Optional
-import gradio as gr
 import logging
-from pyspark.sql import SparkSession
-from pyspark.sql import DataFrame
-import asyncpg
-from ..config import POSTGRES_CONFIG
-import pandas as pd
+from typing import Optional, Tuple
 
-from .formatters import format_status_markdown, all_services_ok
-from ..services.checks import run_health_checks
-from ..services.s3 import list_s3_objects
-from ..services.aws import AWSCredentials
-from ..services.pipeline import Pipeline
-from ..utils import get_logger, set_global_log_level, disable_logging
+import asyncpg
+import gradio as gr
+import pandas as pd
+from pyspark.sql import DataFrame, SparkSession
+
+from magi.config import POSTGRES_CONFIG
+from magi.services.aws import AWSCredentials
+from magi.services.checks import run_health_checks
+from magi.services.pipeline import Pipeline
+from magi.services.s3 import list_s3_objects
+from magi.utils import disable_logging, get_logger, set_global_log_level
+from magi.ui.formatters import all_services_ok, format_status_markdown
 
 # Create a logger for this module
 logger = get_logger(__name__)
@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 MAX_ROWS_DISPLAY = 500  # Number of rows to show in UI
 
 # Default log level
-DEFAULT_LOG_LEVEL = logging.INFO
+DEFAULT_LOG_LEVEL = logging.DEBUG
 
 
 def create_gradio_app() -> gr.Blocks:

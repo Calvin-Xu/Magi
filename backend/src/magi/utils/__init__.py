@@ -1,12 +1,12 @@
 """Utility modules for the Magi project."""
 
 from .logging import (
-    get_logger,
-    set_global_log_level,
-    enable_logging,
     disable_logging,
-    log_function_call,
+    enable_logging,
+    get_logger,
     log_async_function_call,
+    log_function_call,
+    set_global_log_level,
 )
 
 __all__ = [
