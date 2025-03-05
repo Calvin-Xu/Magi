@@ -7,7 +7,8 @@ class Entity:
     name: str
     description: str
     embedding: Optional[List[float]] = field(default_factory=list)
-    postgres_reference: Optional[str] = None
+    postgres_reference: Optional[int] = None
+    hash_key: Optional[str] = None
 
     # Define column names as class variables
     NAME_COLUMN: str = "name"
@@ -21,7 +22,8 @@ class RelationshipType:
     name: str
     description: str
     embedding: Optional[List[float]] = field(default_factory=list)
-    postgres_reference: Optional[str] = None
+    postgres_reference: Optional[int] = None
+    hash_key: Optional[str] = None
 
     # Define column names as class variables
     NAME_COLUMN: str = "name"
@@ -47,7 +49,7 @@ class Relationship:
     RELATIONSHIP_TYPE_COLUMN: str = "relationship_type"
     FROM_ENTITY_DESCRIPTION_COLUMN: str = "from_entity_description"
     TO_ENTITY_DESCRIPTION_COLUMN: str = "to_entity_description"
-    RELATIONSHIP_DESCRIPTION_COLUMN: str = "relationship_description"
+    RELATIONSHIP_TYPE_DESCRIPTION_COLUMN: str = "relationship_description"
     CONSTRAINT_CONDITION_COLUMN: str = "constraint_condition"
     REASON_COLUMN: str = "reason"
     IS_CAUSAL_COLUMN: str = "is_causal"

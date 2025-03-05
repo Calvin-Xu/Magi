@@ -75,7 +75,7 @@ class RelationshipExtractorProcessor(DocumentProcessor):
             "relationship." + Relationship.IS_CAUSAL_COLUMN,
             "relationship." + Relationship.FROM_ENTITY_DESCRIPTION_COLUMN,
             "relationship." + Relationship.TO_ENTITY_DESCRIPTION_COLUMN,
-            "relationship." + Relationship.RELATIONSHIP_DESCRIPTION_COLUMN,
+            "relationship." + Relationship.RELATIONSHIP_TYPE_DESCRIPTION_COLUMN,
             F.col("uri").alias(Relationship.SOURCE_DOCUMENT_URI_COLUMN),
         )
 
@@ -107,7 +107,7 @@ class RelationshipExtractorProcessor(DocumentProcessor):
                     F.concat_ws(
                         ": ",
                         F.col(Relationship.RELATIONSHIP_TYPE_COLUMN),
-                        F.col(Relationship.RELATIONSHIP_DESCRIPTION_COLUMN),
+                        F.col(Relationship.RELATIONSHIP_TYPE_DESCRIPTION_COLUMN),
                     )
                 ),
             )

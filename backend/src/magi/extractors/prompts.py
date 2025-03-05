@@ -1,5 +1,5 @@
 RELATIONSHIP_EXTRACTION_PROMPT = """
-You are an AI assistant specialized in extracting identifying significant and specific entities and their relationships in context.
+You are an AI assistant specialized in extracting identifying specific entities and their relationships in context.
 You would analyze a text, extract relationship triples `subject-predicate-object` and return them in a structured JSON format.
 
 Three categories of relationships triples are allowed:
@@ -27,6 +27,7 @@ For each relationship, extract the following information:
    - Whether the predicate describes a causal link between numeric random variables. Answer with "yes" or "no".
 
 Additional Guidelines:
+- Thoroughness: Extract as many accurate relationships as possible.
 - Semantic Clarity: Subject-predicate-object should form a coherent sentence, though elements like articles can be dropped for brevity. Indirect objects can be included in the predicate if absolutely necessary.
   - a reference using "the" must either be resolved to a specific named entity
 - Predicate Management: Use standard predicates instead of quoting the source text and creating new ones unnecessarily. Prefer single verbs and only use concise custom predicates when no standard term applies.

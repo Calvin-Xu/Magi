@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 MAX_ROWS_DISPLAY = 500  # Number of rows to show in UI
 
 # Default log level
-DEFAULT_LOG_LEVEL = logging.DEBUG
+DEFAULT_LOG_LEVEL = logging.INFO
 
 
 def create_gradio_app() -> gr.Blocks:
@@ -41,23 +41,23 @@ def create_gradio_app() -> gr.Blocks:
             status_md = gr.Markdown("Checking services...")
             refresh_btn = gr.Button("Refresh Status", variant="primary", size="sm")
 
-        # Logging Configuration Section
-        gr.Markdown("## Logging Configuration")
-        with gr.Row():
-            log_level = gr.Dropdown(
-                label="Log Level",
-                choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-                value="INFO",
-            )
-            logging_enabled = gr.Checkbox(
-                label="Enable Logging",
-                value=True,
-            )
+            # Moved Logging Configuration inside Service Details
+            gr.Markdown("### Logging Configuration")
+            with gr.Row():
+                log_level = gr.Dropdown(
+                    label="Log Level",
+                    choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                    value="INFO",
+                )
+                logging_enabled = gr.Checkbox(
+                    label="Enable Logging",
+                    value=True,
+                )
 
-        with gr.Row():
-            apply_log_settings_btn = gr.Button(
-                "Apply Log Settings", variant="primary", size="sm"
-            )
+            with gr.Row():
+                apply_log_settings_btn = gr.Button(
+                    "Apply Log Settings", variant="primary", size="sm"
+                )
 
         # S3 Browser Section
         gr.Markdown("## S3 Data Source")
@@ -82,6 +82,21 @@ def create_gradio_app() -> gr.Blocks:
 
         output_md = gr.Markdown("")
         output_df = gr.Dataframe()
+
+        # Create DataFrame components for displaying tables
+        gr.Markdown("## Database Tables")
+        with gr.Row():
+            refresh_tables_btn = gr.Button(
+                "Refresh Tables", variant="primary", size="sm"
+            )
+
+        entities_df = gr.Dataframe(label="Entities Table")  # For entities table
+        relationship_types_df = gr.Dataframe(
+            label="Relationship Types Table"
+        )  # For relationship types table
+        relationships_df = gr.Dataframe(
+            label="Relationships Table"
+        )  # For relationships table
 
         wipe_btn = gr.Button("Wipe All Data", variant="stop")
         wipe_output = gr.Markdown("")
@@ -125,15 +140,54 @@ def create_gradio_app() -> gr.Blocks:
                 database=POSTGRES_CONFIG["database"],
             )
 
-            entities = await conn.fetch("SELECT * FROM entities;")
-            relationship_types = await conn.fetch("SELECT * FROM relationship_types;")
-            relationships = await conn.fetch("SELECT * FROM relationships;")
+            entities = await conn.fetch(
+                "SELECT id, name, description FROM entities LIMIT 10;"
+            )
+            relationship_types = await conn.fetch(
+                "SELECT id, name, description FROM relationship_types LIMIT 10;"
+            )
+            relationships = await conn.fetch(
+                """
+                SELECT 
+                    r.id, 
+                    e_from.name || ' [' || e_from.id || ']' AS from_entity, 
+                    rt.name || ' [' || rt.id || ']' AS relationship_type, 
+                    e_to.name || ' [' || e_to.id || ']' AS to_entity, 
+                    r.reason, 
+                    r.source_document_uri
+                FROM relationships r
+                JOIN entities e_from ON r.from_entity = e_from.id
+                JOIN entities e_to ON r.to_entity = e_to.id
+                JOIN relationship_types rt ON r.relationship_type = rt.id
+                LIMIT 10;
+                """
+            )
+            if not entities or not relationship_types or not relationships:
+                return (
+                    pd.DataFrame(),
+                    pd.DataFrame(),
+                    pd.DataFrame(),
+                )
+            entities_df = pd.DataFrame(entities)
+            entities_df.columns = ["id", "name", "description"]
+            relationship_types_df = pd.DataFrame(relationship_types)
+            relationship_types_df.columns = ["id", "name", "description"]
+            relationships_df = pd.DataFrame(relationships)
+            relationships_df.columns = [
+                "id",
+                "from_entity",
+                "relationship_type",
+                "to_entity",
+                "reason",
+                "source_document_uri",
+            ]
+
             await conn.close()
 
             return (
-                pd.DataFrame(entities),
-                pd.DataFrame(relationship_types),
-                pd.DataFrame(relationships),
+                entities_df,
+                relationship_types_df,
+                relationships_df,
             )
 
         async def refresh_data():
@@ -149,6 +203,8 @@ def create_gradio_app() -> gr.Blocks:
             relationships_df.value = (
                 relationships_data  # Update the relationships DataFrame
             )
+            # Return the data for the output components
+            return entities_data, relationship_types_data, relationships_data
 
         async def process_files(
             uri: str,
@@ -193,7 +249,14 @@ def create_gradio_app() -> gr.Blocks:
                 result_df = first_df.toPandas()  # Convert to Pandas DataFrame
 
                 # Refresh the data in the DataFrame components
-                await refresh_data()  # Call the refresh function
+                refreshed_data = (
+                    await refresh_data()
+                )  # Call the refresh function to get updated data
+
+                # Update the UI components with the refreshed data
+                entities_df.value = refreshed_data[0]
+                relationship_types_df.value = refreshed_data[1]
+                relationships_df.value = refreshed_data[2]
 
                 return result_df
 
@@ -219,10 +282,19 @@ def create_gradio_app() -> gr.Blocks:
             )
             await conn.close()
 
+            from gqlalchemy import Memgraph
+            from magi.config import MEMGRAPH_CONFIG
+
+            mg = Memgraph(host=MEMGRAPH_CONFIG["host"], port=MEMGRAPH_CONFIG["port"])
+            mg.execute("MATCH (n) DETACH DELETE n;")
+
             return "All data wiped from tables."
 
         async def wipe_data():
-            return await wipe_all_data()
+            result = await wipe_all_data()
+            # Get refreshed data after wiping
+            refreshed_data = await refresh_data()
+            return result, *refreshed_data
 
         async def apply_log_settings(log_level: str, logging_enabled: bool):
             if logging_enabled:
@@ -246,7 +318,7 @@ def create_gradio_app() -> gr.Blocks:
 
         wipe_btn.click(
             fn=wipe_data,
-            outputs=[wipe_output],
+            outputs=[wipe_output, entities_df, relationship_types_df, relationships_df],
         )
 
         apply_log_settings_btn.click(
@@ -255,14 +327,11 @@ def create_gradio_app() -> gr.Blocks:
             outputs=[],
         )
 
-        # Create DataFrame components for displaying tables
-        entities_df = gr.Dataframe(label="Entities Table")  # For entities table
-        relationship_types_df = gr.Dataframe(
-            label="Relationship Types Table"
-        )  # For relationship types table
-        relationships_df = gr.Dataframe(
-            label="Relationships Table"
-        )  # For relationships table
+        # Connect refresh_tables_btn to refresh_data function
+        refresh_tables_btn.click(
+            fn=refresh_data,
+            outputs=[entities_df, relationship_types_df, relationships_df],
+        )
 
         # Service status update handlers
         async def async_update() -> Tuple[str, str]:
@@ -281,9 +350,21 @@ def create_gradio_app() -> gr.Blocks:
             outputs=[status_title, status_md],
         )
 
+        # Load data when UI loads
+        async def load_initial_data():
+            status_result = await async_update()
+            data_result = await load_data()
+            return (*status_result, *data_result)
+
         ui.load(
-            fn=async_update,
-            outputs=[status_title, status_md],
+            fn=load_initial_data,
+            outputs=[
+                status_title,
+                status_md,
+                entities_df,
+                relationship_types_df,
+                relationships_df,
+            ],
         )
 
     return ui

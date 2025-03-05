@@ -51,17 +51,71 @@ class ObjectResolutionProcessor(DocumentProcessor):
         logger.info(f"Processing {len(pandas_df)} relationships")
 
         try:
-            # Process entities and get hash-to-reference mapping
-            _, entity_hash_to_reference = await self.create_extracted_entities_df(
-                pandas_df
-            )
-            logger.info(
-                f"Processed entities: {len(entity_hash_to_reference)} unique entities found"
+            # Import necessary modules
+            import asyncio
+            import asyncpg
+            from magi.config import POSTGRES_CONFIG
+
+            # Create separate database connections for concurrent operations
+            entity_conn = await asyncpg.connect(
+                host=POSTGRES_CONFIG["host"],
+                port=POSTGRES_CONFIG["port"],
+                user=POSTGRES_CONFIG["user"],
+                password=POSTGRES_CONFIG["password"],
+                database=POSTGRES_CONFIG["database"],
             )
 
-            # Process relationship types and get hash-to-reference mapping
-            _, rel_type_hash_to_reference = await self.create_extracted_rel_types_df(
-                pandas_df
+            rel_type_conn = await asyncpg.connect(
+                host=POSTGRES_CONFIG["host"],
+                port=POSTGRES_CONFIG["port"],
+                user=POSTGRES_CONFIG["user"],
+                password=POSTGRES_CONFIG["password"],
+                database=POSTGRES_CONFIG["database"],
+            )
+
+            try:
+                # Create temporary resolvers with separate connections
+                entity_resolver_with_conn = type(self.entity_resolver)(
+                    conn=entity_conn,
+                    embedding_provider=self.entity_resolver.embedding_provider,
+                    table_name=self.entity_resolver.table_name,
+                    reference_column=self.entity_resolver.reference_column,
+                    similarity_threshold=self.entity_resolver.similarity_threshold,
+                    max_tokens_per_batch=self.entity_resolver.max_tokens_per_batch,
+                )
+
+                rel_type_resolver_with_conn = type(self.rel_type_resolver)(
+                    conn=rel_type_conn,
+                    embedding_provider=self.rel_type_resolver.embedding_provider,
+                    table_name=self.rel_type_resolver.table_name,
+                    reference_column=self.rel_type_resolver.reference_column,
+                    similarity_threshold=self.rel_type_resolver.similarity_threshold,
+                    max_tokens_per_batch=self.rel_type_resolver.max_tokens_per_batch,
+                )
+
+                # Create tasks for parallel execution with separate connections
+                entities_task = self._create_extracted_entities_df_with_resolver(
+                    pandas_df, entity_resolver_with_conn
+                )
+                rel_types_task = self._create_extracted_rel_types_df_with_resolver(
+                    pandas_df, rel_type_resolver_with_conn
+                )
+
+                # Execute both tasks concurrently
+                entities_result, rel_types_result = await asyncio.gather(
+                    entities_task, rel_types_task
+                )
+
+                # Unpack results
+                _, entity_hash_to_reference = entities_result
+                _, rel_type_hash_to_reference = rel_types_result
+            finally:
+                # Close the temporary connections
+                await entity_conn.close()
+                await rel_type_conn.close()
+
+            logger.info(
+                f"Processed entities: {len(entity_hash_to_reference)} unique entities found"
             )
             logger.info(
                 f"Processed relationship types: {len(rel_type_hash_to_reference)} unique types found"
@@ -93,7 +147,6 @@ class ObjectResolutionProcessor(DocumentProcessor):
             # Return the original DataFrame if there's an error
             return df
 
-    @log_async_function_call()
     async def compute_embeddings(self, descriptions: List[str]) -> List[List[float]]:
         """Compute embeddings for a list of descriptions in batches."""
         # Filter out empty descriptions to avoid errors
@@ -137,6 +190,42 @@ class ObjectResolutionProcessor(DocumentProcessor):
 
         Args:
             extracted_relationships_df: DataFrame containing extracted relationships
+
+        Returns:
+            Tuple of (DataFrame of unique entities, hash-to-reference mapping)
+        """
+        return await self._create_extracted_entities_df_with_resolver(
+            extracted_relationships_df, self.entity_resolver
+        )
+
+    @log_async_function_call()
+    async def create_extracted_rel_types_df(
+        self, extracted_relationships_df: pd.DataFrame
+    ) -> Tuple[pd.DataFrame, Dict[str, str]]:
+        """
+        Create a DataFrame of unique relationship types from extracted relationships.
+
+        Args:
+            extracted_relationships_df: DataFrame containing extracted relationships
+
+        Returns:
+            Tuple of (DataFrame of unique relationship types, hash-to-reference mapping)
+        """
+        return await self._create_extracted_rel_types_df_with_resolver(
+            extracted_relationships_df, self.rel_type_resolver
+        )
+
+    async def _create_extracted_entities_df_with_resolver(
+        self, extracted_relationships_df: pd.DataFrame, resolver: Resolver
+    ) -> Tuple[pd.DataFrame, Dict[str, str]]:
+        """
+        Create a DataFrame of unique entities using the provided resolver.
+
+        This is a wrapper around create_extracted_entities_df that allows using a custom resolver.
+
+        Args:
+            extracted_relationships_df: DataFrame containing extracted relationships
+            resolver: The resolver to use for entity resolution
 
         Returns:
             Tuple of (DataFrame of unique entities, hash-to-reference mapping)
@@ -193,9 +282,9 @@ class ObjectResolutionProcessor(DocumentProcessor):
             }
         )
 
-        # Add embeddings as a separate step to avoid numpy array conversion issues
-        for i, embedding in enumerate(embeddings):
-            extracted_entities_df.at[i, Entity.EMBEDDING_COLUMN] = embedding
+        # Create a separate Series for embeddings and then assign it to the DataFrame
+        embedding_series = pd.Series(embeddings, index=extracted_entities_df.index)
+        extracted_entities_df[Entity.EMBEDDING_COLUMN] = embedding_series
 
         # Initialize postgres reference column
         extracted_entities_df[Entity.POSTGRES_REFERENCE_COLUMN] = None
@@ -204,9 +293,9 @@ class ObjectResolutionProcessor(DocumentProcessor):
             f"Created entities DataFrame with {len(extracted_entities_df)} rows"
         )
 
-        # Convert DataFrame to list of Entity objects for the resolver
-        entities = []
-        for _, row in extracted_entities_df.iterrows():
+        # Create a dictionary mapping from hash to Entity objects
+        hash_to_entity = {}
+        for i, row in extracted_entities_df.iterrows():
             # Make sure embedding is a list, not a numpy array
             embedding = row[Entity.EMBEDDING_COLUMN]
             if embedding is not None and not isinstance(embedding, list):
@@ -220,23 +309,40 @@ class ObjectResolutionProcessor(DocumentProcessor):
                 name=row[Entity.NAME_COLUMN],
                 description=row[Entity.DESCRIPTION_COLUMN],
                 embedding=embedding,
+                hash_key=row["hash"],
             )
-            entities.append(entity)
+            hash_to_entity[row["hash"]] = entity
 
-        logger.debug(f"Created {len(entities)} Entity objects")
+        logger.debug(f"Created dictionary with {len(hash_to_entity)} Entity objects")
 
-        # Resolve entities against the database
-        resolved_entities = await self.entity_resolver.resolve(entities)
+        # Resolve entities against the database using the dictionary approach
+        # Use the provided resolver instead of self.entity_resolver
+        resolved_hash_to_entity = await resolver.resolve(hash_to_entity)
 
-        logger.info(f"Resolved {len(resolved_entities)} entities")
+        logger.info(f"Resolved {len(resolved_hash_to_entity)} entities")
 
-        # Create hash-to-reference mapping
-        hash_to_reference = {}
-        for i, entity in enumerate(resolved_entities):
-            if entity.postgres_reference:
-                hash_to_reference[all_entities.iloc[i]["hash"]] = (
-                    entity.postgres_reference
+        # Update the DataFrame with postgres references from resolved entities
+        for i, row in extracted_entities_df.iterrows():
+            entity_hash = row["hash"]
+            if entity_hash in resolved_hash_to_entity:
+                extracted_entities_df.at[i, Entity.POSTGRES_REFERENCE_COLUMN] = (
+                    resolved_hash_to_entity[entity_hash].postgres_reference
                 )
+
+        # Log how many entities have missing postgres references
+        missing_refs = extracted_entities_df[
+            extracted_entities_df[Entity.POSTGRES_REFERENCE_COLUMN].isna()
+        ]
+        if not missing_refs.empty:
+            logger.warning(
+                f"{len(missing_refs)} entities are missing postgres references after resolution"
+            )
+
+        # Create hash-to-reference mapping - only include entities with valid references
+        hash_to_reference = {}
+        for entity_hash, entity in resolved_hash_to_entity.items():
+            if entity.postgres_reference:
+                hash_to_reference[entity_hash] = entity.postgres_reference
 
         logger.debug(
             f"Created hash-to-reference mapping with {len(hash_to_reference)} entries"
@@ -244,15 +350,17 @@ class ObjectResolutionProcessor(DocumentProcessor):
 
         return extracted_entities_df, hash_to_reference
 
-    @log_async_function_call()
-    async def create_extracted_rel_types_df(
-        self, extracted_relationships_df: pd.DataFrame
+    async def _create_extracted_rel_types_df_with_resolver(
+        self, extracted_relationships_df: pd.DataFrame, resolver: Resolver
     ) -> Tuple[pd.DataFrame, Dict[str, str]]:
         """
-        Create a DataFrame of unique relationship types from extracted relationships.
+        Create a DataFrame of unique relationship types using the provided resolver.
+
+        This is a wrapper around create_extracted_rel_types_df that allows using a custom resolver.
 
         Args:
             extracted_relationships_df: DataFrame containing extracted relationships
+            resolver: The resolver to use for relationship type resolution
 
         Returns:
             Tuple of (DataFrame of unique relationship types, hash-to-reference mapping)
@@ -297,9 +405,9 @@ class ObjectResolutionProcessor(DocumentProcessor):
             }
         )
 
-        # Add embeddings as a separate step to avoid numpy array conversion issues
-        for i, embedding in enumerate(embeddings):
-            extracted_rel_types_df.at[i, RelationshipType.EMBEDDING_COLUMN] = embedding
+        # Create a separate Series for embeddings and then assign it to the DataFrame
+        embedding_series = pd.Series(embeddings, index=extracted_rel_types_df.index)
+        extracted_rel_types_df[RelationshipType.EMBEDDING_COLUMN] = embedding_series
 
         # Initialize postgres reference column
         extracted_rel_types_df[RelationshipType.POSTGRES_REFERENCE_COLUMN] = None
@@ -308,9 +416,9 @@ class ObjectResolutionProcessor(DocumentProcessor):
             f"Created relationship types DataFrame with {len(extracted_rel_types_df)} rows"
         )
 
-        # Convert DataFrame to list of RelationshipType objects for the resolver
-        rel_types = []
-        for _, row in extracted_rel_types_df.iterrows():
+        # Create a dictionary mapping from hash to RelationshipType objects
+        hash_to_rel_type = {}
+        for i, row in extracted_rel_types_df.iterrows():
             # Make sure embedding is a list, not a numpy array
             embedding = row[RelationshipType.EMBEDDING_COLUMN]
             if embedding is not None and not isinstance(embedding, list):
@@ -324,23 +432,42 @@ class ObjectResolutionProcessor(DocumentProcessor):
                 name=row[RelationshipType.NAME_COLUMN],
                 description=row[RelationshipType.DESCRIPTION_COLUMN],
                 embedding=embedding,
+                hash_key=row["hash"],
             )
-            rel_types.append(rel_type)
+            hash_to_rel_type[row["hash"]] = rel_type
 
-        logger.debug(f"Created {len(rel_types)} RelationshipType objects")
+        logger.debug(
+            f"Created dictionary with {len(hash_to_rel_type)} RelationshipType objects"
+        )
 
-        # Resolve relationship types against the database
-        resolved_rel_types = await self.rel_type_resolver.resolve(rel_types)
+        # Resolve relationship types against the database using the dictionary approach
+        # Use the provided resolver instead of self.rel_type_resolver
+        resolved_hash_to_rel_type = await resolver.resolve(hash_to_rel_type)
 
-        logger.info(f"Resolved {len(resolved_rel_types)} relationship types")
+        logger.info(f"Resolved {len(resolved_hash_to_rel_type)} relationship types")
 
-        # Create hash-to-reference mapping
+        # Update the DataFrame with postgres references from resolved relationship types
+        for i, row in extracted_rel_types_df.iterrows():
+            rel_type_hash = row["hash"]
+            if rel_type_hash in resolved_hash_to_rel_type:
+                extracted_rel_types_df.at[
+                    i, RelationshipType.POSTGRES_REFERENCE_COLUMN
+                ] = resolved_hash_to_rel_type[rel_type_hash].postgres_reference
+
+        # Log how many relationship types have missing postgres references
+        missing_refs = extracted_rel_types_df[
+            extracted_rel_types_df[RelationshipType.POSTGRES_REFERENCE_COLUMN].isna()
+        ]
+        if not missing_refs.empty:
+            logger.warning(
+                f"{len(missing_refs)} relationship types are missing postgres references after resolution"
+            )
+
+        # Create hash-to-reference mapping - only include relationship types with valid references
         hash_to_reference = {}
-        for i, rel_type in enumerate(resolved_rel_types):
+        for rel_type_hash, rel_type in resolved_hash_to_rel_type.items():
             if rel_type.postgres_reference:
-                hash_to_reference[unique_rel_types.iloc[i]["hash"]] = (
-                    rel_type.postgres_reference
-                )
+                hash_to_reference[rel_type_hash] = rel_type.postgres_reference
 
         logger.debug(
             f"Created hash-to-reference mapping with {len(hash_to_reference)} entries"
@@ -431,7 +558,7 @@ class ObjectResolutionProcessor(DocumentProcessor):
         relationships_df: pd.DataFrame,
     ) -> List[int]:
         """
-        Save relationships to the database using asyncpg.
+        Save relationships to the PostgreSQL and Memgraph databases.
 
         Args:
             relationships_df: DataFrame containing relationships with references
@@ -444,6 +571,11 @@ class ObjectResolutionProcessor(DocumentProcessor):
         logger.info(f"Saving {len(relationships_df)} relationships to database")
 
         try:
+            from gqlalchemy import Memgraph
+            from magi.config import MEMGRAPH_CONFIG
+
+            mg = Memgraph(host=MEMGRAPH_CONFIG["host"], port=MEMGRAPH_CONFIG["port"])
+
             async with self.conn.transaction():
                 for _, row in relationships_df.iterrows():
                     # Extract fields from the relationship dictionary
@@ -457,7 +589,7 @@ class ObjectResolutionProcessor(DocumentProcessor):
                         )
                         continue
 
-                    # Insert the relationship into the database
+                    # Insert the relationship into PostgreSQL
                     query = """
                     INSERT INTO relationships 
                     (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_document_uri)
@@ -469,7 +601,7 @@ class ObjectResolutionProcessor(DocumentProcessor):
                         f"Executing query with params: {from_entity_ref}, {to_entity_ref}, {rel_type_ref}"
                     )
 
-                    result = await self.conn.fetchval(
+                    relationship_id = await self.conn.fetchval(
                         query,
                         from_entity_ref,
                         to_entity_ref,
@@ -480,11 +612,61 @@ class ObjectResolutionProcessor(DocumentProcessor):
                         row[Relationship.SOURCE_DOCUMENT_URI_COLUMN],
                     )
 
-                    relationship_ids.append(result)
-                    logger.info(f"Inserted relationship with ID: {result}")
+                    relationship_ids.append(relationship_id)
+                    logger.info(f"Inserted relationship with ID: {relationship_id}")
+
+                    from_entity_name = row[Relationship.FROM_ENTITY_COLUMN]
+                    to_entity_name = row[Relationship.TO_ENTITY_COLUMN]
+                    rel_type_name = row[Relationship.RELATIONSHIP_TYPE_COLUMN]
+
+                    # Save to Memgraph
+                    try:
+                        query_str = f"""
+                        MATCH (from_entity:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
+                        RETURN count(from_entity) AS count
+                        """
+                        result = mg.execute_and_fetch(query_str)
+                        if next(result)["count"] == 0:
+                            query_str = f"""
+                            CREATE (e:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
+                            """
+                            mg.execute(query_str)
+
+                        query_str = f"""
+                        MATCH (to_entity:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
+                        RETURN count(to_entity) AS count
+                        """
+                        result = mg.execute_and_fetch(query_str)
+                        if next(result)["count"] == 0:
+                            query_str = f"""
+                            CREATE (e:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
+                            """
+                            mg.execute(query_str)
+
+                        # Create the relationship
+                        # Convert relationship type to a valid Cypher identifier
+                        # Replace spaces with underscores and remove special characters
+                        import re
+
+                        valid_rel_type = re.sub(r"[^a-zA-Z0-9_]", "_", rel_type_name)
+                        valid_rel_type = valid_rel_type.upper()
+
+                        query_str = f"""
+                        MATCH (from_entity:Entity {{pg_id: {from_entity_ref}}})
+                        MATCH (to_entity:Entity {{pg_id: {to_entity_ref}}})
+                        CREATE (from_entity)-[r:{valid_rel_type} {{pg_id: {relationship_id}}}]->(to_entity)
+                        RETURN r
+                        """
+                        mg.execute(query_str)
+
+                        logger.info(
+                            f"Inserted relationship into Memgraph: {from_entity_name} -[{valid_rel_type}]-> {to_entity_name}"
+                        )
+                    except Exception as e:
+                        logger.exception(f"Error saving to Memgraph: {str(e)}")
 
             logger.info(
-                f"Successfully saved {len(relationship_ids)} relationships to database"
+                f"Successfully saved {len(relationship_ids)} relationships to databases"
             )
             return relationship_ids
         except Exception as e:

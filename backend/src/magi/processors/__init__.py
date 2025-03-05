@@ -1,7 +1,7 @@
 """Processors for document and relationship processing."""
 
 from .base import DocumentProcessor
-from .object_resolver import ObjectResolutionProcessor
+from .object_resolution_processor import ObjectResolutionProcessor
 from .relationship_extractor import RelationshipExtractorProcessor
 
 __all__ = [

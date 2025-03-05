@@ -4,25 +4,23 @@ These resolvers handle the resolution of entities and relationship types
 against existing database entries using embedding similarity and LLM verification.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Generic, List, TypeVar
 
 import asyncpg
 import numpy as np
 
-from magi.resolvers.models import ObjectWithEmbedding
-
-from magi.embedders.base import EmbeddingProvider
-from magi.utils import get_logger, log_async_function_call
 from magi.resolvers.models import (
     ObjectPair,
+    ObjectWithEmbedding,
     ProcessedObject,
-    SimilarObject,
     VerificationResult,
 )
 
-# Create a logger for this module
-logger = get_logger(__name__)
+from magi.embedders.base import EmbeddingProvider
+
+logger = logging.getLogger(__name__)
 
 # Generic type for the object (entity or relationship type)
 T = TypeVar("T")
@@ -70,10 +68,9 @@ class Resolver(Generic[T], ABC):
         self.similarity_threshold = similarity_threshold
         self.max_tokens_per_batch = max_tokens_per_batch
 
-    @log_async_function_call()
-    async def resolve(self, objects: List[T]) -> List[T]:
+    async def resolve(self, objects_dict: Dict[str, T]) -> Dict[str, T]:
         """
-        Resolve a list of objects against existing database entries.
+        Resolve a dictionary of objects against themselves & existing database entries.
 
         This method:
         1. Computes embeddings for each object
@@ -83,21 +80,28 @@ class Resolver(Generic[T], ABC):
         5. Returns resolved objects with database references
 
         Args:
-            objects: List of objects (Entity or RelationshipType) to resolve
+            objects_dict: Dictionary mapping from hash to objects (Entity or RelationshipType) to resolve
 
         Returns:
-            List of resolved objects with database references and updated fields
+            Dictionary mapping from the same hash keys to resolved objects with database references
         """
-        if not objects:
-            logger.info("No objects to resolve, returning empty list")
-            return []
+        if not objects_dict:
+            logger.info("No objects to resolve, returning empty dictionary")
+            return {}
 
         try:
-            logger.info(f"Resolving {len(objects)} objects")
+            logger.info(f"Resolving {len(objects_dict)} objects")
 
-            # Convert objects to dictionaries
-            object_models = [self._object_to_model(obj) for obj in objects]
-            logger.debug(f"Converted {len(object_models)} objects to models")
+            # Convert objects to models and include hash keys
+            object_models = []
+            for hash_key, obj in objects_dict.items():
+                model = self._object_to_model(obj)
+                model.hash_key = hash_key  # Assign the hash key to the model
+                object_models.append(model)
+
+            logger.debug(
+                f"Converted {len(object_models)} objects to models with hash keys"
+            )
 
             # Compute embeddings
             object_models_with_embeddings = await self._compute_embeddings(
@@ -127,24 +131,91 @@ class Resolver(Generic[T], ABC):
                 verification_results.extend(batch_results)
             logger.debug(f"Verified {len(verification_results)} object pairs")
 
-            # Process verification results
-            processed_objects = await self._process_verification_results(
-                object_models_with_embeddings, verification_results
+            # Process verification results - now returns Dict[str, T] directly
+            resolved_dict = await self._process_verification_results(
+                object_models_with_embeddings, verification_results, objects_dict
             )
-            logger.debug(f"Processed {len(processed_objects)} verification results")
+            logger.debug(
+                f"Processed verification results into {len(resolved_dict)} resolved objects"
+            )
 
-            # Convert back to original objects
-            resolved_objects = [
-                self._model_to_object(processed.resolved, objects[i])
-                for i, processed in enumerate(processed_objects)
-            ]
-            logger.info(f"Successfully resolved {len(resolved_objects)} objects")
+            logger.info(f"Successfully resolved {len(resolved_dict)} objects")
+            return resolved_dict
 
-            return resolved_objects
         except Exception as e:
             logger.exception(f"Error in Resolver.resolve: {str(e)}")
             # Return the original objects if there's an error
-            return objects
+            return objects_dict
+
+    def _create_verification_prompt(self, pairs: List[ObjectPair]) -> str:
+        """
+        Create a prompt for the LLM to verify if objects are the same.
+
+        Args:
+            pairs: List of ObjectPair instances
+
+        Returns:
+            Prompt string for the LLM
+        """
+        prompt = """
+                As an expert AI assistant in entity resolution, you analyze pairs of objects and determine if they refer to the same entity or concept.
+
+                For each pair:
+                1. Determine if Object A and Object B refer to the same entity or concept.
+                2. If they are the same, create an updated name and description that combines the information from both.
+                3. If they are not the same, leave the updated fields as null.
+
+                Respond with a JSON object containing your analysis for each pair.
+
+                Here are the pairs to analyze:
+                """.strip()
+
+        for i, pair in enumerate(pairs):
+            prompt += f"""
+                        Pair {i}:
+                        Object A:
+                        - Name: {pair.input_object.name}
+                        - Description: {pair.input_object.description}
+
+                        Object B:
+                        - Name: {pair.similar_object.name}
+                        - Description: {pair.similar_object.description}
+
+                        """.strip()
+
+        prompt += """
+                Use the following criteria to determine if two objects are the same:
+                - Do they refer to the same real-world entity, concept, or relationship?
+                - Are they synonyms or different ways of expressing the same idea?
+                - Would merging them provide a more complete understanding without introducing contradictions?
+
+                For each pair, provide:
+                1. Whether they are the same (true/false)
+                2. If same, a name that best represents the entity and is identifiable in a global context
+                3. If same, a description that combines information from both descriptions
+
+                Your response should be a JSON object with the following structure:
+                ```json
+                {
+                "results": [
+                    {
+                    "pair_id": 0,
+                    "is_same": true,
+                    "updated_name": "Best name that represents both objects",
+                    "updated_description": "Combined description that includes information from both objects"
+                    },
+                    {
+                    "pair_id": 1,
+                    "is_same": false,
+                    "updated_name": null,
+                    "updated_description": null
+                    }
+                ]
+                }
+                ```
+                """.strip()
+
+        return prompt
 
     def _object_to_model(self, obj: T) -> ObjectWithEmbedding:
         """
@@ -167,6 +238,7 @@ class Resolver(Generic[T], ABC):
             description=obj.description,
             embedding=obj.embedding if hasattr(obj, "embedding") else [],
             reference_id=reference_id,
+            hash_key=obj.hash_key,
             metadata={},  # Additional fields could be added here if needed
         )
 
@@ -183,6 +255,12 @@ class Resolver(Generic[T], ABC):
         """
         # Create a new object of the same type as the original
         if hasattr(original_obj, "postgres_reference"):
+            # Track if an object is missing a reference_id
+            if model.reference_id is None:
+                logger.warning(
+                    f"Object {model.name} does not have a reference_id after resolution"
+                )
+
             # Assuming Entity or similar
             updated_obj = type(original_obj)(
                 name=model.name,
@@ -258,98 +336,126 @@ class Resolver(Generic[T], ABC):
         Returns:
             List of ObjectPair containing input_object, similar_object, and is_from_input_list flag
         """
-        result = []
-        n_objects = len(objects)
+        if not objects:
+            return []
 
-        if n_objects == 0:
-            return result
+        # Filter out objects with empty embeddings
+        valid_objects = [obj for obj in objects if obj.embedding]
+        if not valid_objects:
+            logger.warning("No objects with valid embeddings found")
+            return []
 
         # Convert all embeddings to a numpy array for vectorized operations
-        embeddings = np.array([obj.embedding for obj in objects], dtype=np.float32)
+        embeddings = np.array(
+            [obj.embedding for obj in valid_objects], dtype=np.float32
+        )
 
-        # Compute all pairwise similarities in one go
-        # Normalize the embeddings
+        # Early exit if we only have one object
+        if len(valid_objects) == 1:
+            # Only check database for similar objects
+            db_results = await self.find_similar_by_embedding(
+                self.conn,
+                self.table_name,
+                valid_objects[0].embedding,
+                self.similarity_threshold,
+                limit=1,
+            )
+
+            if not db_results:
+                return []
+
+            db_obj = db_results[0]
+            # Create ObjectWithEmbedding from the dictionary
+            similar_obj = ObjectWithEmbedding(
+                name=db_obj["name"],
+                description=db_obj["description"],
+                reference_id=db_obj["reference_id"],
+                embedding=[],  # Empty embedding for now
+                hash_key=valid_objects[0].hash_key,  # Use same hash key as input object
+                metadata={},
+            )
+
+            return [
+                ObjectPair(
+                    input_object=valid_objects[0],
+                    similar_object=similar_obj,
+                    is_from_input_list=False,
+                )
+            ]
+
+        # Compute all pairwise similarities in one batch
+        # Normalize the embeddings for cosine similarity
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         normalized_embeddings = embeddings / np.maximum(
             norms, 1e-10
         )  # Avoid division by zero
 
-        # Compute similarity matrix using dot product of normalized vectors
+        # Compute similarity matrix - dot product of normalized vectors is cosine similarity
         similarity_matrix = np.dot(normalized_embeddings, normalized_embeddings.T)
 
         # Set diagonal to -1 to exclude self-comparisons
         np.fill_diagonal(similarity_matrix, -1)
 
-        # Find the most similar object for each input object
-        for i, obj in enumerate(objects):
-            # Get similarities for this object with all other input objects
+        # Batch find similar objects in the database
+        all_embeddings = [obj.embedding for obj in valid_objects]
+        db_results_batch = await self.find_similar_by_embeddings_batch(
+            self.conn,
+            self.table_name,
+            all_embeddings,
+            self.similarity_threshold,
+            limit_per_query=1,
+        )
+
+        # Process results and create ObjectPairs - exactly one per input object
+        result_pairs = []
+        for i, obj in enumerate(valid_objects):
+            # Find the most similar object in the input list
             input_similarities = similarity_matrix[i]
+            max_input_similarity = np.max(input_similarities)
+            max_input_idx = np.argmax(input_similarities)
 
-            # Find the index of the most similar object and its similarity
-            most_similar_idx = np.argmax(input_similarities)
-            highest_input_similarity = input_similarities[most_similar_idx]
+            # Check database results for this object
+            db_obj_results = db_results_batch[i]
+            db_similarity = 0.0
 
-            # Only consider it if above threshold
-            most_similar_input_obj = None
-            if highest_input_similarity > self.similarity_threshold:
-                similar_obj = objects[most_similar_idx]
-                most_similar_input_obj = SimilarObject(
-                    name=similar_obj.name,
-                    description=similar_obj.description,
-                    embedding=similar_obj.embedding,
-                    reference_id=similar_obj.reference_id,
-                    metadata=similar_obj.metadata,
-                    similarity=float(highest_input_similarity),
-                )
+            if db_obj_results:
+                db_obj = db_obj_results[0]
+                db_similarity = db_obj["similarity"]
 
-            # Find similar objects in the database
-            similar_db_objects = await self.find_similar_by_embedding(
-                self.conn,
-                self.table_name,
-                obj.embedding,
-                self.similarity_threshold,
-                limit=1,  # Only need the most similar one
-            )
-
-            # Get the most similar database object if any
-            most_similar_db_obj = None
-            highest_db_similarity = -1.0
-
-            if similar_db_objects:
-                db_obj = similar_db_objects[0]
-                highest_db_similarity = db_obj.similarity
-                most_similar_db_obj = db_obj
-
-            # Determine which object is more similar
-            if most_similar_input_obj and (
-                highest_input_similarity > highest_db_similarity
+            # Compare similarities and choose the most similar object
+            if max_input_similarity >= self.similarity_threshold and (
+                not db_obj_results or max_input_similarity >= db_similarity
             ):
-                # Input object is more similar
-                result.append(
+                # Input list object is more similar
+                most_similar_input_obj = valid_objects[max_input_idx]
+                result_pairs.append(
                     ObjectPair(
                         input_object=obj,
                         similar_object=most_similar_input_obj,
                         is_from_input_list=True,
                     )
                 )
-            elif most_similar_db_obj:
+            elif db_obj_results and db_similarity >= self.similarity_threshold:
                 # Database object is more similar
-                result.append(
+                db_obj = db_obj_results[0]
+                similar_db_obj = ObjectWithEmbedding(
+                    name=db_obj["name"],
+                    description=db_obj["description"],
+                    reference_id=db_obj["reference_id"],
+                    embedding=[],  # Empty embedding for now
+                    hash_key=obj.hash_key,  # Use same hash key as input object
+                    metadata={},
+                )
+                result_pairs.append(
                     ObjectPair(
                         input_object=obj,
-                        similar_object=most_similar_db_obj,
+                        similar_object=similar_db_obj,
                         is_from_input_list=False,
                     )
                 )
-            else:
-                # No similar object found
-                result.append(
-                    ObjectPair(
-                        input_object=obj, similar_object=None, is_from_input_list=False
-                    )
-                )
+            # If neither is above threshold, no pair is created for this object
 
-        return result
+        return result_pairs
 
     @abstractmethod
     async def _create_verification_batches(
@@ -386,222 +492,152 @@ class Resolver(Generic[T], ABC):
         self,
         objects: List[ObjectWithEmbedding],
         verification_results: List[VerificationResult[ObjectWithEmbedding]],
-    ) -> List[ProcessedObject[ObjectWithEmbedding]]:
+        objects_dict: Dict[str, T],
+    ) -> Dict[str, T]:
         """
         Process verification results and update/create objects.
 
         Args:
             objects: Original list of objects with embeddings
             verification_results: Results from LLM verification
+            objects_dict: Original dictionary of objects
 
         Returns:
-            List of processed objects with database references
+            Dictionary mapping from the same hash keys to resolved objects with database references
         """
-        resolved_objects = []
-        objects_to_update_embeddings = []
+        # Create a mapping from hash_key to the original object for direct updates
+        hash_to_object = {obj.hash_key: obj for obj in objects}
+
+        # Dictionary to track processed objects by their hash key
+        hash_to_processed: Dict[str, ProcessedObject[ObjectWithEmbedding]] = {}
+
+        # Track objects that need embedding updates
+        objects_to_update = []
         descriptions_to_embed = []
 
-        # Track which input objects have been processed
-        processed_input_objects = set()
-
-        # Create a mapping from input object name to its index in the resolved_objects list
-        input_name_to_index = {}
-
+        # Process verification results
         for result in verification_results:
-            input_obj = result.input_object
-            similar_obj = result.db_object  # This could be from DB or input list
-            is_same = result.is_same
-            is_from_input_list = result.is_from_input_list
+            input_obj = result.pair.input_object
+            similar_obj = result.pair.similar_object
+            hash_key = input_obj.hash_key
 
-            # Skip if this input object has already been processed
-            if input_obj.name in processed_input_objects:
+            # Skip if we've already processed this input object
+            if hash_key in hash_to_processed:
                 continue
 
-            processed_input_objects.add(input_obj.name)
+            if result.is_same and similar_obj:
+                # Check if the similar object has a reference_id
+                if similar_obj.reference_id is None:
+                    # No reference_id means we need to create a new object
+                    obj_to_update = hash_to_object[hash_key]
 
-            if is_same and similar_obj is not None:
-                if is_from_input_list:
-                    # Both objects are from the input list and are the same
-                    # We need to add one to the database and link the other to it
+                    # Apply any updates from verification
+                    if result.updated_name:
+                        obj_to_update.name = result.updated_name
+                    if result.updated_description:
+                        obj_to_update.description = result.updated_description
 
-                    # Check if the similar object has already been processed
-                    if (
-                        similar_obj.name in processed_input_objects
-                        and similar_obj.name in input_name_to_index
-                    ):
-                        # The similar object has already been processed and added to the database
-                        # Just link this object to the same database entry
-                        similar_obj_index = input_name_to_index[similar_obj.name]
-                        processed_obj = resolved_objects[similar_obj_index]
-                        db_id = processed_obj.reference_id
+                    # Create a new database entry
+                    db_id = await self._insert_object_into_db(obj_to_update)
 
-                        resolved_obj = self._model_to_object(input_obj, input_obj)
-                        # Update the object with the reference
-                        resolved_obj_model = self._object_to_model(resolved_obj)
-                        resolved_obj_model.reference_id = db_id
+                    # Set the reference_id directly
+                    obj_to_update.reference_id = db_id
 
-                        processed_obj = ProcessedObject(
-                            original=input_obj,
-                            resolved=resolved_obj_model,
-                            reference_id=db_id,
-                            is_new=False,
-                            has_updates=False,
-                        )
-                        resolved_objects.append(processed_obj)
-                        input_name_to_index[input_obj.name] = len(resolved_objects) - 1
-                    else:
-                        # Neither object has been processed yet
-                        # Create a merged object with updated name/description if provided
-                        updated_name = result.updated_name or input_obj.name
-                        updated_description = (
-                            result.updated_description or input_obj.description
-                        )
+                    hash_to_processed[hash_key] = ProcessedObject(
+                        resolved=obj_to_update,
+                        reference_id=db_id,
+                        hash_key=hash_key,
+                        is_new=True,
+                        has_updates=False,
+                    )
 
-                        merged_obj = ObjectWithEmbedding(
-                            name=updated_name,
-                            description=updated_description,
-                            embedding=input_obj.embedding,
-                            metadata=input_obj.metadata.copy(),
-                        )
+                    continue
 
-                        # Insert the merged object into the database
-                        db_id = await self._insert_object_into_db(merged_obj)
+                # Objects are the same - either link or update
+                updated_name = result.updated_name
+                updated_description = result.updated_description
 
-                        # Update both objects with the reference
-                        resolved_obj1 = ObjectWithEmbedding(
-                            name=updated_name,
-                            description=updated_description,
-                            embedding=input_obj.embedding,
-                            reference_id=db_id,
-                            metadata=input_obj.metadata.copy(),
-                        )
+                # Determine if we need to update the existing object
+                if updated_name or updated_description:
+                    # Get the original object to update
+                    obj_to_update = hash_to_object[hash_key]
 
-                        processed_obj = ProcessedObject(
-                            original=input_obj,
-                            resolved=resolved_obj1,
-                            reference_id=db_id,
-                            is_new=True,
-                            has_updates=updated_name != input_obj.name
-                            or updated_description != input_obj.description,
-                        )
+                    # Update the object
+                    if updated_name:
+                        obj_to_update.name = updated_name
+                    if updated_description:
+                        obj_to_update.description = updated_description
 
-                        resolved_objects.append(processed_obj)
-                        input_name_to_index[input_obj.name] = len(resolved_objects) - 1
+                    # Set the reference_id
+                    obj_to_update.reference_id = similar_obj.reference_id
 
-                        # Mark the similar object as processed
-                        processed_input_objects.add(similar_obj.name)
+                    # Update the object in the database
+                    await self._update_object_in_db(
+                        similar_obj.reference_id,
+                        {
+                            "name": obj_to_update.name,
+                            "description": obj_to_update.description,
+                        },
+                    )
 
-                        # If we need to update embeddings based on the merged data
-                        if (
-                            updated_name != input_obj.name
-                            or updated_description != input_obj.description
-                        ):
-                            objects_to_update_embeddings.append(
-                                (merged_obj, len(resolved_objects) - 1)
-                            )
-                            descriptions_to_embed.append(
-                                f"{merged_obj.name}: {merged_obj.description}"
-                            )
+                    # Queue for embedding update if description changed
+                    if updated_description:
+                        objects_to_update.append((obj_to_update, hash_key))
+                        descriptions_to_embed.append(obj_to_update.description)
+
+                    # Store in our results
+                    hash_to_processed[hash_key] = ProcessedObject(
+                        resolved=obj_to_update,
+                        reference_id=similar_obj.reference_id,
+                        hash_key=hash_key,
+                        is_new=False,
+                        has_updates=True,
+                    )
                 else:
-                    # Object from input list matches one from the database
-                    # Objects are the same, update the existing object if needed
-                    updated_name = result.updated_name
-                    updated_description = result.updated_description
+                    # No updates needed, just link to existing object
+                    obj_to_update = hash_to_object[hash_key]
+                    obj_to_update.reference_id = similar_obj.reference_id
 
-                    if updated_name or updated_description:
-                        # Update the object in the database
-                        updates = {}
-                        if updated_name:
-                            updates["name"] = updated_name
-                        if updated_description:
-                            updates["description"] = updated_description
-
-                        # Track objects that need updated embeddings
-                        if updated_name or updated_description:
-                            # Store the object and its index for later embedding update
-                            obj_to_update = ObjectWithEmbedding(
-                                name=updated_name if updated_name else input_obj.name,
-                                description=updated_description
-                                if updated_description
-                                else input_obj.description,
-                                embedding=input_obj.embedding,
-                                reference_id=similar_obj.reference_id,
-                                metadata=input_obj.metadata.copy(),
-                            )
-
-                            objects_to_update_embeddings.append(
-                                (obj_to_update, len(resolved_objects))
-                            )
-                            descriptions_to_embed.append(
-                                f"{obj_to_update.name}: {obj_to_update.description}"
-                            )
-
-                        # Create a resolved object with the reference and updated values
-                        resolved_obj = ObjectWithEmbedding(
-                            name=updated_name if updated_name else input_obj.name,
-                            description=updated_description
-                            if updated_description
-                            else input_obj.description,
-                            embedding=input_obj.embedding,
-                            reference_id=similar_obj.reference_id,
-                            metadata=input_obj.metadata.copy(),
-                        )
-
-                        processed_obj = ProcessedObject(
-                            original=input_obj,
-                            resolved=resolved_obj,
-                            reference_id=similar_obj.reference_id,
-                            is_new=False,
-                            has_updates=updated_name is not None
-                            or updated_description is not None,
-                        )
-
-                        # We'll update the embedding later in batch
-                        resolved_objects.append(processed_obj)
-                        input_name_to_index[input_obj.name] = len(resolved_objects) - 1
-                    else:
-                        # No updates needed, just link to the existing object
-                        resolved_obj = ObjectWithEmbedding(
-                            name=input_obj.name,
-                            description=input_obj.description,
-                            embedding=input_obj.embedding,
-                            reference_id=similar_obj.reference_id,
-                            metadata=input_obj.metadata.copy(),
-                        )
-
-                        processed_obj = ProcessedObject(
-                            original=input_obj,
-                            resolved=resolved_obj,
-                            reference_id=similar_obj.reference_id,
-                            is_new=False,
-                            has_updates=False,
-                        )
-
-                        resolved_objects.append(processed_obj)
-                        input_name_to_index[input_obj.name] = len(resolved_objects) - 1
+                    hash_to_processed[hash_key] = ProcessedObject(
+                        resolved=obj_to_update,
+                        reference_id=similar_obj.reference_id,
+                        hash_key=hash_key,
+                        is_new=False,
+                        has_updates=False,
+                    )
             else:
-                # Objects are different or no similar object was found, create a new one
-                db_id = await self._insert_object_into_db(input_obj)
+                # Objects are different or no similar object - create new one
+                obj_to_update = hash_to_object[hash_key]
+                db_id = await self._insert_object_into_db(obj_to_update)
 
-                # Update the object with the reference
-                resolved_obj = ObjectWithEmbedding(
-                    name=input_obj.name,
-                    description=input_obj.description,
-                    embedding=input_obj.embedding,
-                    reference_id=db_id,
-                    metadata=input_obj.metadata.copy(),
-                )
+                # Set the reference_id directly
+                obj_to_update.reference_id = db_id
 
-                processed_obj = ProcessedObject(
-                    original=input_obj,
-                    resolved=resolved_obj,
+                hash_to_processed[hash_key] = ProcessedObject(
+                    resolved=obj_to_update,
                     reference_id=db_id,
+                    hash_key=hash_key,
                     is_new=True,
                     has_updates=False,
                 )
 
-                resolved_objects.append(processed_obj)
-                input_name_to_index[input_obj.name] = len(resolved_objects) - 1
+        # Process any remaining objects that weren't in verification results
+        for obj in objects:
+            hash_key = obj.hash_key
+            if hash_key not in hash_to_processed:
+                # Create a new database entry
+                db_id = await self._insert_object_into_db(obj)
+
+                # Set the reference_id directly
+                obj.reference_id = db_id
+
+                hash_to_processed[hash_key] = ProcessedObject(
+                    resolved=obj,
+                    reference_id=db_id,
+                    hash_key=hash_key,
+                    is_new=True,
+                    has_updates=False,
+                )
 
         # Compute new embeddings in batch if needed
         if descriptions_to_embed:
@@ -611,45 +647,32 @@ class Resolver(Generic[T], ABC):
                 embed_prompt=self.EMBED_PROMPT,
             )
 
-            # Update objects with new embeddings
-            for i, (obj_to_update, obj_index) in enumerate(
-                objects_to_update_embeddings
-            ):
-                # Update the embedding in the resolved object
-                resolved_objects[obj_index].resolved.embedding = new_embeddings[i]
+            # Update objects with new embeddings sequentially instead of in parallel
+            for i, (obj_to_update, hash_key) in enumerate(objects_to_update):
+                # Update the embedding in the object directly
+                obj_to_update.embedding = new_embeddings[i]
 
                 # Update the object in the database
                 await self._update_object_in_db(
-                    resolved_objects[obj_index].reference_id,
+                    obj_to_update.reference_id,
                     {"embedding": new_embeddings[i]},
                 )
 
-        # Check for any unprocessed input objects
-        for obj in objects:
-            if obj.name not in processed_input_objects:
-                # Create a new database entry for this object
-                db_id = await self._insert_object_into_db(obj)
-
-                # Add to resolved objects
-                resolved_obj = ObjectWithEmbedding(
-                    name=obj.name,
-                    description=obj.description,
-                    embedding=obj.embedding,
-                    reference_id=db_id,
-                    metadata=obj.metadata.copy(),
+        # Convert processed objects back to original type and maintain dictionary structure
+        resolved_dict = {}
+        for hash_key, obj in objects_dict.items():
+            if hash_key in hash_to_processed:
+                processed = hash_to_processed[hash_key]
+                # Convert the processed model back to the original object type
+                resolved_dict[hash_key] = self._model_to_object(processed.resolved, obj)
+            else:
+                # This should not happen, but just in case
+                logger.warning(
+                    f"Object with hash {hash_key} was not processed, using original"
                 )
+                resolved_dict[hash_key] = obj
 
-                processed_obj = ProcessedObject(
-                    original=obj,
-                    resolved=resolved_obj,
-                    reference_id=db_id,
-                    is_new=True,
-                    has_updates=False,
-                )
-
-                resolved_objects.append(processed_obj)
-
-        return resolved_objects
+        return resolved_dict
 
     async def _update_object_in_db(
         self, object_id: int, updates: Dict[str, Any]
@@ -735,7 +758,7 @@ class Resolver(Generic[T], ABC):
         query_embedding: List[float],
         threshold: float,
         limit: int,
-    ) -> List[SimilarObject]:
+    ) -> List[Dict[str, Any]]:
         """
         Find similar objects by cosine similarity using pgvector.
 
@@ -764,17 +787,78 @@ class Resolver(Generic[T], ABC):
 
         rows = await conn.fetch(query, embedding_str, threshold, limit)
 
-        # Convert rows to SimilarObject instances
+        # Convert rows to dictionaries
         results = []
         for row in rows:
-            similar_obj = SimilarObject(
-                name=row["name"],
-                description=row["description"],
-                reference_id=row["id"],
-                similarity=row["similarity"],
+            similar_obj = {
+                "name": row["name"],
+                "description": row["description"],
+                "reference_id": row["id"],
+                "similarity": row["similarity"],
                 # We don't retrieve the embedding here to save bandwidth
-                embedding=[],
-            )
+                "embedding": [],
+            }
             results.append(similar_obj)
+
+        return results
+
+    async def find_similar_by_embeddings_batch(
+        self,
+        conn,
+        table_name: str,
+        query_embeddings: List[List[float]],
+        threshold: float,
+        limit_per_query: int = 1,
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        Find similar objects by cosine similarity using pgvector in batch.
+
+        Args:
+            conn: asyncpg connection
+            table_name: Name of the table to search in
+            query_embeddings: List of embedding vectors to compare against
+            threshold: Similarity threshold (higher means more similar)
+            limit_per_query: Maximum number of results to return per query
+
+        Returns:
+            List of lists of similar objects with similarity scores
+        """
+        if not query_embeddings:
+            return []
+
+        # Prepare the query template with a placeholder for the embedding
+        query_template = f"""
+        SELECT id, name, description, 1 - (embedding <=> $1::vector) AS similarity
+        FROM {table_name}
+        WHERE 1 - (embedding <=> $1::vector) > $2
+        ORDER BY similarity DESC
+        LIMIT $3
+        """
+
+        # Execute queries sequentially but prepare them all at once
+        results = []
+        for embedding in query_embeddings:
+            # Convert the embedding to a string representation for SQL
+            embedding_str = str(embedding)
+
+            # Execute the query
+            rows = await conn.fetch(
+                query_template, embedding_str, threshold, limit_per_query
+            )
+
+            # Convert rows to dictionaries
+            batch_results = []
+            for row in rows:
+                similar_obj = {
+                    "name": row["name"],
+                    "description": row["description"],
+                    "reference_id": row["id"],
+                    "similarity": row["similarity"],
+                    # We don't retrieve the embedding here to save bandwidth
+                    "embedding": [],
+                }
+                batch_results.append(similar_obj)
+
+            results.append(batch_results)
 
         return results

@@ -4,46 +4,24 @@ This resolver uses OpenAI's LLM capabilities to verify if objects are the same.
 """
 
 import asyncio
-from typing import List, Optional, TypeVar
+from typing import Dict, List, Set, TypeVar
 
 import tiktoken
 from openai import OpenAI
-from pydantic import BaseModel, Field
 
 from magi.config import OPENAI_CONFIG
 from magi.services.models import Entity, RelationshipType
+from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.utils import get_logger
 from .base import Resolver
-from .models import ObjectPair
-from .models import VerificationResult as ModelVerificationResult
+from .models import (
+    LLMVerificationResponse,
+    ObjectPair,
+    VerificationResult as ModelVerificationResult,
+)
 
+logger = get_logger(__name__)
 T = TypeVar("T", Entity, RelationshipType)
-
-
-class VerificationResult(BaseModel):
-    """Model for verification results from OpenAI."""
-
-    input_index: int = Field(
-        ..., description="Index of the input object in the provided list"
-    )
-    is_same: bool = Field(
-        ..., description="Whether the objects refer to the same entity or concept"
-    )
-    updated_name: Optional[str] = Field(
-        None,
-        description="Updated name combining information from both objects (if they are the same)",
-    )
-    updated_description: Optional[str] = Field(
-        None,
-        description="Updated description combining information from both objects (if they are the same)",
-    )
-
-
-class VerificationResponse(BaseModel):
-    """Model for the complete verification response from OpenAI."""
-
-    results: List[VerificationResult] = Field(
-        ..., description="List of verification results for each pair of objects"
-    )
 
 
 class OpenAIResolver(Resolver[T]):
@@ -100,6 +78,18 @@ class OpenAIResolver(Resolver[T]):
         # Reserve tokens for system message, response format, and some overhead
         self.reserved_tokens = 500
 
+        # Initialize rate limiter
+        self._rate_limiter = DistributedRateLimiter()
+        # TODO: make rate limits configurable
+        self._rate_limit = RateLimit(  # Tier 4
+            name="gpt-4o",
+            rpm=10000,  # 10,000 requests per minute
+            tpm=2_000_000,  # 2,000,000 tokens per minute
+            window_size=60,
+            num_shards=10,
+            max_concurrent=5,
+        )
+
     def _count_tokens(self, text: str) -> int:
         """
         Count the number of tokens in a text string.
@@ -128,38 +118,30 @@ class OpenAIResolver(Resolver[T]):
         current_batch = []
         current_token_count = 0
 
-        # Create a sample prompt to estimate the base token count (instructions, etc.)
-        base_prompt = self._create_verification_prompt([])
-        base_token_count = self._count_tokens(base_prompt)
-
-        # Available tokens for actual object pairs
-        available_tokens = (
-            self.max_tokens_per_batch - self.reserved_tokens - base_token_count
-        )
-
         for pair in object_pairs:
             # Skip pairs where no similar object was found
             if pair.similar_object is None:
-                current_batch.append(pair)
+                batches.append([pair])
                 continue
 
-            # Create a sample prompt with just this pair to count tokens
-            sample_pair_prompt = self._create_verification_prompt([pair])
-            pair_token_count = self._count_tokens(sample_pair_prompt) - base_token_count
+            # Create a sample prompt for this pair to estimate token count
+            sample_prompt = self._create_verification_prompt([pair])
+            token_count = self._count_tokens(sample_prompt)
 
             # If adding this pair would exceed the token limit, start a new batch
             if (
-                current_token_count + pair_token_count > available_tokens
+                current_token_count + token_count + self.reserved_tokens
+                > self.max_tokens_per_batch
                 and current_batch
             ):
                 batches.append(current_batch)
                 current_batch = [pair]
-                current_token_count = pair_token_count
+                current_token_count = token_count
             else:
                 current_batch.append(pair)
-                current_token_count += pair_token_count
+                current_token_count += token_count
 
-        # Add the last batch if it's not empty
+        # Add the last batch if it exists
         if current_batch:
             batches.append(current_batch)
 
@@ -184,13 +166,18 @@ class OpenAIResolver(Resolver[T]):
         if not pairs_to_verify:
             return [
                 ModelVerificationResult(
-                    input_object=pair.input_object,
-                    db_object=None,
+                    pair=pair,
                     is_same=False,
-                    is_from_input_list=pair.is_from_input_list,
+                    updated_name=None,
+                    updated_description=None,
                 )
                 for pair in batch
             ]
+
+        # Create a mapping from pair_id to the original pair for easy lookup
+        pair_id_to_pair: Dict[int, ObjectPair] = {
+            i: pair for i, pair in enumerate(pairs_to_verify)
+        }
 
         # Prepare the prompt for the LLM
         prompt = self._create_verification_prompt(pairs_to_verify)
@@ -198,17 +185,29 @@ class OpenAIResolver(Resolver[T]):
         # Count tokens to ensure we're within limits
         token_count = self._count_tokens(prompt)
         if token_count + self.reserved_tokens > self.max_tokens_per_batch:
-            print(
-                f"Warning: Prompt token count ({token_count}) is close to or exceeds the limit. Consider reducing batch size."
+            logger.warning(
+                f"Prompt token count ({token_count}) is close to or exceeds the limit. Consider reducing batch size."
             )
 
         try:
+            # Apply rate limiting before making the API call
+            retry_after = await self._rate_limiter.acquire(
+                rate_limit=self._rate_limit,
+                tokens=token_count
+                + self.reserved_tokens,  # Include reserved tokens in the count
+                reserve=True,
+            )
+
+            if retry_after:
+                # Wait until we can proceed
+                await asyncio.sleep(retry_after - asyncio.get_event_loop().time())
+
             # Call the OpenAI API with structured output
             response = await asyncio.to_thread(
                 self.client.beta.chat.completions.parse,
                 model=self.model,
                 temperature=self.temperature,
-                response_format=VerificationResponse,
+                response_format=LLMVerificationResponse,
                 messages=[
                     {
                         "role": "system",
@@ -222,89 +221,66 @@ class OpenAIResolver(Resolver[T]):
             verification_results = response.choices[0].message.parsed
             processed_results = []
 
-            # Keep track of which input objects have been processed
-            processed_input_objects = set()
+            # Keep track of which pairs have been processed
+            processed_pairs: Set[int] = set()
 
             # Process verified pairs
             for result in verification_results.results:
-                input_idx = result.input_index
-                if 0 <= input_idx < len(pairs_to_verify):
-                    pair = pairs_to_verify[input_idx]
-                    processed_input_objects.add(id(pair.input_object))
+                pair_id = result.pair_id
 
-                    processed_results.append(
-                        ModelVerificationResult(
-                            input_object=pair.input_object,
-                            db_object=pair.similar_object,
-                            is_same=result.is_same,
-                            updated_name=result.updated_name,
-                            updated_description=result.updated_description,
-                            is_from_input_list=pair.is_from_input_list,
-                        )
+                # Validate pair_id is in range
+                if pair_id not in pair_id_to_pair:
+                    logger.warning(f"Received result for invalid pair_id: {pair_id}")
+                    continue
+
+                pair = pair_id_to_pair[pair_id]
+                processed_pairs.add(pair_id)
+
+                processed_results.append(
+                    ModelVerificationResult(
+                        pair=pair,
+                        is_same=result.is_same,
+                        updated_name=result.updated_name,
+                        updated_description=result.updated_description,
                     )
+                )
+
+            # Check if all pairs were processed
+            if len(processed_pairs) < len(pairs_to_verify):
+                missing_pairs = set(pair_id_to_pair.keys()) - processed_pairs
+                logger.warning(
+                    f"LLM failed to verify all pairs. Missing pairs: {missing_pairs}"
+                )
 
             # Add results for input objects that were not processed
-            for pair in batch:
-                if (
-                    pair.similar_object is None
-                    or id(pair.input_object) not in processed_input_objects
+            for i, pair in enumerate(batch):
+                if pair.similar_object is None or (
+                    pair.similar_object is not None and i not in processed_pairs
                 ):
                     processed_results.append(
                         ModelVerificationResult(
-                            input_object=pair.input_object,
-                            db_object=pair.similar_object,
+                            pair=pair,
                             is_same=False,
-                            is_from_input_list=pair.is_from_input_list,
+                            updated_name=None,
+                            updated_description=None,
                         )
                     )
 
             return processed_results
-        except Exception as e:
-            # Handle errors gracefully
-            print(f"Error processing LLM response: {e}")
 
-            # Return a default response indicating objects are different
+        except Exception as e:
+            logger.error(f"Error verifying objects with OpenAI: {e}")
+            # Return default results for all pairs in case of error
             return [
                 ModelVerificationResult(
-                    input_object=pair.input_object,
-                    db_object=pair.similar_object,
+                    pair=pair,
                     is_same=False,
-                    is_from_input_list=pair.is_from_input_list,
+                    updated_name=None,
+                    updated_description=None,
                 )
                 for pair in batch
             ]
 
-    def _create_verification_prompt(self, pairs: List[ObjectPair]) -> str:
-        """
-        Create a prompt for the LLM to verify if objects are the same.
-
-        Args:
-            pairs: List of ObjectPair instances
-
-        Returns:
-            Prompt string for the LLM
-        """
-        prompt = """
-I need you to analyze pairs of objects and determine if they refer to the same entity or relationship type.
-For each pair, determine:
-1. If they are the same entity/relationship type (is_same: true/false)
-2. If they are the same, provide an updated name and description that combines the best information from both
-
-Here are the pairs to analyze:
-
-"""
-
-        for i, pair in enumerate(pairs):
-            input_obj = pair.input_object
-            db_obj = pair.similar_object
-
-            if db_obj is None:
-                continue
-
-            prompt += f"\nPair {i}:\n"
-            prompt += f"Input Object:\n- Name: {input_obj.name}\n- Description: {input_obj.description}\n"
-            prompt += f"Retrieved Object:\n- Name: {db_obj.name}\n- Description: {db_obj.description}\n"
-
-        prompt += "\nPlease analyze each pair and determine if they represent the same entity or concept."
-
-        return prompt
+    async def close(self):
+        """Close rate limiter resources."""
+        await self._rate_limiter.close()
