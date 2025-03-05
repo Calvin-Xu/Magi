@@ -4,9 +4,10 @@ These resolvers handle the resolution of entities and relationship types
 against existing database entries using embedding similarity and LLM verification.
 """
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generic, List, TypeVar
+from typing import Any, Dict, Generic, List, TypeVar, Optional
 
 import asyncpg
 import numpy as np
@@ -47,8 +48,11 @@ class Resolver(Generic[T], ABC):
         embedding_provider: EmbeddingProvider,
         table_name: str,
         reference_column: str,
-        similarity_threshold: float = 0.2,
+        similarity_threshold: float = 0.4,
         max_tokens_per_batch: int = 4000,
+        candidate_epsilon: float = 0.05,
+        db_candidate_limit: int = 1,
+        max_concurrent_requests: int = 20,
     ):
         """
         Initialize the resolver with database connection and parameters.
@@ -67,6 +71,9 @@ class Resolver(Generic[T], ABC):
         self.reference_column = reference_column
         self.similarity_threshold = similarity_threshold
         self.max_tokens_per_batch = max_tokens_per_batch
+        self.candidate_epsilon = candidate_epsilon
+        self.db_candidate_limit = db_candidate_limit
+        self.max_concurrent_requests = max_concurrent_requests
 
     async def resolve(self, objects_dict: Dict[str, T]) -> Dict[str, T]:
         """
@@ -121,14 +128,28 @@ class Resolver(Generic[T], ABC):
             batches = await self._create_verification_batches(object_pairs)
             logger.debug(f"Created {len(batches)} verification batches")
 
-            # Verify each batch
-            verification_results = []
-            for i, batch in enumerate(batches):
-                logger.debug(
-                    f"Verifying batch {i + 1}/{len(batches)} with {len(batch)} pairs"
-                )
-                batch_results = await self._verify_objects_batch(batch)
-                verification_results.extend(batch_results)
+            semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+
+            async def verify_batch_with_semaphore(batch, batch_index):
+                async with semaphore:
+                    logger.debug(
+                        f"Verifying batch {batch_index + 1}/{len(batches)} with {len(batch)} pairs"
+                    )
+                    return await self._verify_objects_batch(batch)
+
+            # Create tasks for all batches
+            verification_tasks = [
+                verify_batch_with_semaphore(batch, i) for i, batch in enumerate(batches)
+            ]
+
+            # Execute all tasks concurrently and gather results
+            batch_results = await asyncio.gather(*verification_tasks)
+
+            # Flatten the results
+            verification_results = [
+                result for batch_result in batch_results for result in batch_result
+            ]
+
             logger.debug(f"Verified {len(verification_results)} object pairs")
 
             # Process verification results - now returns Dict[str, T] directly
@@ -181,7 +202,7 @@ class Resolver(Generic[T], ABC):
                         - Name: {pair.similar_object.name}
                         - Description: {pair.similar_object.description}
 
-                        """.strip()
+                        """
 
         prompt += """
                 Use the following criteria to determine if two objects are the same:
@@ -191,8 +212,11 @@ class Resolver(Generic[T], ABC):
 
                 For each pair, provide:
                 1. Whether they are the same (true/false)
-                2. If same, a name that best represents the entity and is identifiable in a global context
+                2. If same, a canonical name that best represents the object and is identifiable in a global context
                 3. If same, a description that combines information from both descriptions
+
+                The name field should contain one canonical name the object is best known by.
+                Any aliases or other names the object is known as should be included in the description.
 
                 Your response should be a JSON object with the following structure:
                 ```json
@@ -200,13 +224,13 @@ class Resolver(Generic[T], ABC):
                 "results": [
                     {
                     "pair_id": 0,
-                    "is_same": true,
-                    "updated_name": "Best name that represents both objects",
-                    "updated_description": "Combined description that includes information from both objects"
+                    "are_same": true,
+                    "updated_name": "A canonical name that is identifiable globally",
+                    "updated_description": "Revised globally-identifying description of the object, combining information from both entries"
                     },
                     {
                     "pair_id": 1,
-                    "is_same": false,
+                    "are_same": false,
                     "updated_name": null,
                     "updated_description": null
                     }
@@ -330,132 +354,152 @@ class Resolver(Generic[T], ABC):
         """
         Find similar objects in both the input list and the database for each input object.
 
-        Args:
-            objects: List of objects with embeddings
+        For each valid object (with a non-empty embedding), we:
+        1. Compute pairwise similarities with other input objects.
+        2. Retrieve candidate matches from the database (up to a configurable limit).
+        3. For both input and DB candidates, we include all matches with similarity >= threshold
+            and within an epsilon margin of the top candidate.
 
         Returns:
-            List of ObjectPair containing input_object, similar_object, and is_from_input_list flag
+            List of ObjectPair containing input_object, candidate similar_object, and a flag indicating
+            if the candidate came from the input list.
         """
         if not objects:
             return []
 
-        # Filter out objects with empty embeddings
+        # Only consider objects with valid embeddings.
         valid_objects = [obj for obj in objects if obj.embedding]
         if not valid_objects:
             logger.warning("No objects with valid embeddings found")
             return []
 
-        # Convert all embeddings to a numpy array for vectorized operations
+        # Convert embeddings to a numpy array.
         embeddings = np.array(
             [obj.embedding for obj in valid_objects], dtype=np.float32
         )
 
-        # Early exit if we only have one object
+        # Configuration parameters.
+        similarity_threshold = self.similarity_threshold
+        epsilon = self.candidate_epsilon  # margin below the top similarity
+        db_candidate_limit = self.db_candidate_limit  # how many DB candidates to fetch
+
+        # Special handling if there's only one valid object: only check DB.
         if len(valid_objects) == 1:
-            # Only check database for similar objects
             db_results = await self.find_similar_by_embedding(
                 self.conn,
                 self.table_name,
                 valid_objects[0].embedding,
-                self.similarity_threshold,
-                limit=1,
+                similarity_threshold,
+                limit=db_candidate_limit,
             )
+            candidate_pairs = []
+            if db_results:
+                # Find top DB similarity.
+                top_db_similarity = db_results[0]["similarity"]
+                for db_obj in db_results:
+                    if db_obj["similarity"] >= max(
+                        similarity_threshold, top_db_similarity - epsilon
+                    ):
+                        candidate = ObjectWithEmbedding(
+                            name=db_obj["name"],
+                            description=db_obj["description"],
+                            reference_id=db_obj["reference_id"],
+                            embedding=[],  # not needed here
+                            hash_key=valid_objects[
+                                0
+                            ].hash_key,  # use same hash key as input object
+                            metadata={},
+                        )
+                        candidate_pairs.append(
+                            ObjectPair(
+                                input_object=valid_objects[0],
+                                similar_object=candidate,
+                                is_from_input_list=False,
+                            )
+                        )
+            return candidate_pairs
 
-            if not db_results:
-                return []
-
-            db_obj = db_results[0]
-            # Create ObjectWithEmbedding from the dictionary
-            similar_obj = ObjectWithEmbedding(
-                name=db_obj["name"],
-                description=db_obj["description"],
-                reference_id=db_obj["reference_id"],
-                embedding=[],  # Empty embedding for now
-                hash_key=valid_objects[0].hash_key,  # Use same hash key as input object
-                metadata={},
-            )
-
-            return [
-                ObjectPair(
-                    input_object=valid_objects[0],
-                    similar_object=similar_obj,
-                    is_from_input_list=False,
-                )
-            ]
-
-        # Compute all pairwise similarities in one batch
-        # Normalize the embeddings for cosine similarity
+        # Normalize embeddings for cosine similarity.
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        normalized_embeddings = embeddings / np.maximum(
-            norms, 1e-10
-        )  # Avoid division by zero
+        normalized_embeddings = embeddings / np.maximum(norms, 1e-10)
 
-        # Compute similarity matrix - dot product of normalized vectors is cosine similarity
+        # Compute the similarity matrix for input objects.
         similarity_matrix = np.dot(normalized_embeddings, normalized_embeddings.T)
-
-        # Set diagonal to -1 to exclude self-comparisons
+        # Exclude self-comparisons.
         np.fill_diagonal(similarity_matrix, -1)
 
-        # Batch find similar objects in the database
-        all_embeddings = [obj.embedding for obj in valid_objects]
+        # Retrieve DB candidates in batch (using a limit higher than 1).
         db_results_batch = await self.find_similar_by_embeddings_batch(
             self.conn,
             self.table_name,
-            all_embeddings,
-            self.similarity_threshold,
-            limit_per_query=1,
+            [obj.embedding for obj in valid_objects],
+            similarity_threshold,
+            limit_per_query=db_candidate_limit,
         )
 
-        # Process results and create ObjectPairs - exactly one per input object
-        result_pairs = []
+        candidate_pairs = []  # final list of ObjectPair
+
+        # For each input object, collect candidates from both sources.
         for i, obj in enumerate(valid_objects):
-            # Find the most similar object in the input list
-            input_similarities = similarity_matrix[i]
-            max_input_similarity = np.max(input_similarities)
-            max_input_idx = np.argmax(input_similarities)
+            # --- Input-list candidates ---
+            input_sims = similarity_matrix[i]
+            # Identify candidates with similarity above threshold.
+            input_candidate_indices = np.where(input_sims >= similarity_threshold)[0]
+            input_candidates = []
+            if input_candidate_indices.size > 0:
+                top_input_similarity = np.max(input_sims[input_candidate_indices])
+                # Include all input neighbors whose similarity is within epsilon of the top.
+                for j in input_candidate_indices:
+                    if input_sims[j] >= max(
+                        similarity_threshold, top_input_similarity - epsilon
+                    ):
+                        # Avoid self-pairing (should be already excluded via diag=-1, but safe-check)
+                        if j == i:
+                            continue
+                        input_candidates.append((j, input_sims[j]))
 
-            # Check database results for this object
-            db_obj_results = db_results_batch[i]
-            db_similarity = 0.0
+            # --- Database candidates ---
+            db_candidates = []
+            db_result_list = db_results_batch[i]
+            if db_result_list:
+                top_db_similarity = db_result_list[0]["similarity"]
+                for db_candidate in db_result_list:
+                    if db_candidate["similarity"] >= max(
+                        similarity_threshold, top_db_similarity - epsilon
+                    ):
+                        db_candidates.append((db_candidate, db_candidate["similarity"]))
 
-            if db_obj_results:
-                db_obj = db_obj_results[0]
-                db_similarity = db_obj["similarity"]
-
-            # Compare similarities and choose the most similar object
-            if max_input_similarity >= self.similarity_threshold and (
-                not db_obj_results or max_input_similarity >= db_similarity
-            ):
-                # Input list object is more similar
-                most_similar_input_obj = valid_objects[max_input_idx]
-                result_pairs.append(
+            # --- Aggregate candidate pairs for this object ---
+            # For each candidate from input list:
+            for j, sim_score in input_candidates:
+                candidate_pairs.append(
                     ObjectPair(
                         input_object=obj,
-                        similar_object=most_similar_input_obj,
+                        similar_object=valid_objects[j],
                         is_from_input_list=True,
                     )
                 )
-            elif db_obj_results and db_similarity >= self.similarity_threshold:
-                # Database object is more similar
-                db_obj = db_obj_results[0]
-                similar_db_obj = ObjectWithEmbedding(
-                    name=db_obj["name"],
-                    description=db_obj["description"],
-                    reference_id=db_obj["reference_id"],
-                    embedding=[],  # Empty embedding for now
-                    hash_key=obj.hash_key,  # Use same hash key as input object
+
+            # For each candidate from the DB:
+            for db_candidate, sim_score in db_candidates:
+                # Create a candidate object from DB result.
+                candidate_obj = ObjectWithEmbedding(
+                    name=db_candidate["name"],
+                    description=db_candidate["description"],
+                    reference_id=db_candidate["reference_id"],
+                    embedding=[],  # not required here
+                    hash_key=obj.hash_key,  # use same hash_key as input object
                     metadata={},
                 )
-                result_pairs.append(
+                candidate_pairs.append(
                     ObjectPair(
                         input_object=obj,
-                        similar_object=similar_db_obj,
+                        similar_object=candidate_obj,
                         is_from_input_list=False,
                     )
                 )
-            # If neither is above threshold, no pair is created for this object
 
-        return result_pairs
+        return candidate_pairs
 
     @abstractmethod
     async def _create_verification_batches(
@@ -483,7 +527,7 @@ class Resolver(Generic[T], ABC):
             batch: List of ObjectPair containing input_object, similar_object, and is_from_input_list flag
 
         Returns:
-            List of verification results with input_object, db_object, is_same flag,
+            List of verification results with input_object, db_object, are_same flag,
             updated_name, updated_description, and is_from_input_list flag
         """
         pass
@@ -495,184 +539,576 @@ class Resolver(Generic[T], ABC):
         objects_dict: Dict[str, T],
     ) -> Dict[str, T]:
         """
-        Process verification results and update/create objects.
+        Process verification results and update/create objects with correct merges.
 
-        Args:
-            objects: Original list of objects with embeddings
-            verification_results: Results from LLM verification
-            objects_dict: Original dictionary of objects
-
-        Returns:
-            Dictionary mapping from the same hash keys to resolved objects with database references
+        Steps:
+        1) Build adjacency graph for all pairs (are_same=True) -> group objects that are identical.
+        2) Find connected components (each group is one real-world entity).
+        3) For each group, either:
+            - Link to an existing database row (if any member has reference_id),
+            - or insert exactly one new row for the entire group.
+        4) Mark all items in that group with the chosen reference_id so they point to the same DB record.
+        5) Recompute embeddings if any group members' descriptions were updated by the LLM.
+        6) Convert them back to original object types for the final return.
         """
-        # Create a mapping from hash_key to the original object for direct updates
+
+        # ----- 1) Prepare Data Structures -----
+
+        # We map each hash_key -> the ObjectWithEmbedding for easy reference
         hash_to_object = {obj.hash_key: obj for obj in objects}
 
-        # Dictionary to track processed objects by their hash key
+        # Our final result data: hash_key -> ProcessedObject
         hash_to_processed: Dict[str, ProcessedObject[ObjectWithEmbedding]] = {}
 
-        # Track objects that need embedding updates
-        objects_to_update = []
-        descriptions_to_embed = []
+        # Step 1a: We'll store partial LLM updates (updated_name / updated_description)
+        # keyed by the input_obj's hash_key. If multiple pairs updated the same object,
+        # you might want more sophisticated merging logic. For simplicity, the last one
+        # would overwrite. You can refine as needed.
+        partial_updates: Dict[str, Dict[str, str]] = {}
 
-        # Process verification results
+        # Step 1b: Build adjacency dict for objects that are "the same"
+        adjacency = {hk: set() for hk in hash_to_object.keys()}
+
+        # We only mark adjacency if result.are_same is True
         for result in verification_results:
-            input_obj = result.pair.input_object
-            similar_obj = result.pair.similar_object
-            hash_key = input_obj.hash_key
+            if result.are_same and result.pair.similar_object is not None:
+                in_key = result.pair.input_object.hash_key
+                sim_key = result.pair.similar_object.hash_key
+                adjacency[in_key].add(sim_key)
+                adjacency[sim_key].add(in_key)
 
-            # Skip if we've already processed this input object
-            if hash_key in hash_to_processed:
+                # If LLM suggested updated fields, stash them:
+                if result.updated_name or result.updated_description:
+                    partial_updates.setdefault(in_key, {})
+                    if result.updated_name:
+                        partial_updates[in_key]["name"] = result.updated_name
+                    if result.updated_description:
+                        partial_updates[in_key]["description"] = (
+                            result.updated_description
+                        )
+
+        # ----- 2) Find Connected Components (Groups) -----
+        visited = set()
+
+        def dfs(start, group):
+            stack = [start]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                group.add(node)
+                for nei in adjacency[node]:
+                    if nei not in visited:
+                        stack.append(nei)
+
+        groups = []
+        for hk in adjacency:
+            if hk not in visited:
+                comp = set()
+                dfs(hk, comp)
+                groups.append(comp)
+
+        # ----- 3) For each group, unify under a single DB reference -----
+        for group in groups:
+            # If all items in this group are already processed, skip
+            if all(hk in hash_to_processed for hk in group):
                 continue
 
-            if result.is_same and similar_obj:
-                # Check if the similar object has a reference_id
-                if similar_obj.reference_id is None:
-                    # No reference_id means we need to create a new object
-                    obj_to_update = hash_to_object[hash_key]
+            # Check if any object in this group has an existing reference_id
+            any_db_obj = None
+            for hk in group:
+                if hash_to_object[hk].reference_id:
+                    any_db_obj = hash_to_object[hk]
+                    break
 
-                    # Apply any updates from verification
-                    if result.updated_name:
-                        obj_to_update.name = result.updated_name
-                    if result.updated_description:
-                        obj_to_update.description = result.updated_description
+            # We'll pick one "representative" from the group for insertion or linking
+            rep_key = next(iter(group))  # just pick the first hash_key
+            rep_obj = hash_to_object[rep_key]
 
-                    # Create a new database entry
-                    db_id = await self._insert_object_into_db(obj_to_update)
+            # If the LLM gave partial updates for rep_obj, apply them
+            if rep_key in partial_updates:
+                pu = partial_updates[rep_key]
+                if "name" in pu:
+                    rep_obj.name = pu["name"]
+                if "description" in pu:
+                    rep_obj.description = pu["description"]
 
-                    # Set the reference_id directly
-                    obj_to_update.reference_id = db_id
+            if any_db_obj:
+                # If any object is already in the DB, unify everything under that ID
+                rep_obj.reference_id = any_db_obj.reference_id
+                # Optionally do an update if you want to merge info into the existing DB row
+                # We'll skip that detail or mark for later
+            else:
+                # Insert exactly one row for the entire group
+                rep_id = await self._safe_insert(rep_obj)
+                rep_obj.reference_id = rep_id
 
-                    hash_to_processed[hash_key] = ProcessedObject(
-                        resolved=obj_to_update,
-                        reference_id=db_id,
-                        hash_key=hash_key,
+            # Now assign the rep_obj's reference_id to every item in the group
+            for hk in group:
+                if hk in hash_to_processed:
+                    continue  # already done
+
+                obj = hash_to_object[hk]
+
+                # If partial updates exist for this specific object, apply them
+                if hk in partial_updates and obj is not rep_obj:
+                    pu = partial_updates[hk]
+                    if "name" in pu:
+                        obj.name = pu["name"]
+                    if "description" in pu:
+                        obj.description = pu["description"]
+
+                # Link to the representative's reference
+                obj.reference_id = rep_obj.reference_id
+
+                # Mark it as processed
+                hash_to_processed[hk] = ProcessedObject(
+                    resolved=obj,
+                    reference_id=rep_obj.reference_id,
+                    hash_key=hk,
+                    is_new=(any_db_obj is None),  # new only if we just inserted
+                    has_updates=False,
+                )
+
+        # 4) Handle any objects not in adjacency (i.e. no pairs or no matches).
+        #    The DFS covers them as singletons, but let's be safe in case something was missed.
+        for obj in objects:
+            if obj.hash_key not in hash_to_processed:
+                # This is truly isolated; create or unify
+                if obj.reference_id:
+                    # Already in DB, so just store it
+                    hash_to_processed[obj.hash_key] = ProcessedObject(
+                        resolved=obj,
+                        reference_id=obj.reference_id,
+                        hash_key=obj.hash_key,
+                        is_new=False,
+                        has_updates=False,
+                    )
+                else:
+                    # Insert brand new
+                    if obj.hash_key in partial_updates:
+                        pu = partial_updates[obj.hash_key]
+                        if "name" in pu:
+                            obj.name = pu["name"]
+                        if "description" in pu:
+                            obj.description = pu["description"]
+                    new_id = await self._safe_insert(obj)
+                    obj.reference_id = new_id
+                    hash_to_processed[obj.hash_key] = ProcessedObject(
+                        resolved=obj,
+                        reference_id=new_id,
+                        hash_key=obj.hash_key,
                         is_new=True,
                         has_updates=False,
                     )
 
-                    continue
+        # ----- 5) Recompute embeddings if any object got an updated description -----
 
-                # Objects are the same - either link or update
-                updated_name = result.updated_name
-                updated_description = result.updated_description
+        # We check partial_updates for "description" changes. If the LLM proposed a new description,
+        # we embed it. Note: you could also track changes from merges, but let's keep it straightforward.
+        updated_objs = []
+        for hk, obj in hash_to_object.items():
+            # if partial_updates had a new "description" for hk, let's assume we need a new embedding
+            if hk in partial_updates and "description" in partial_updates[hk]:
+                updated_objs.append((obj, hk))
 
-                # Determine if we need to update the existing object
-                if updated_name or updated_description:
-                    # Get the original object to update
-                    obj_to_update = hash_to_object[hash_key]
+        if updated_objs:
+            # 5a) gather the updated descriptions
+            new_texts = [o.description for (o, _) in updated_objs]
 
-                    # Update the object
-                    if updated_name:
-                        obj_to_update.name = updated_name
-                    if updated_description:
-                        obj_to_update.description = updated_description
-
-                    # Set the reference_id
-                    obj_to_update.reference_id = similar_obj.reference_id
-
-                    # Update the object in the database
-                    await self._update_object_in_db(
-                        similar_obj.reference_id,
-                        {
-                            "name": obj_to_update.name,
-                            "description": obj_to_update.description,
-                        },
-                    )
-
-                    # Queue for embedding update if description changed
-                    if updated_description:
-                        objects_to_update.append((obj_to_update, hash_key))
-                        descriptions_to_embed.append(obj_to_update.description)
-
-                    # Store in our results
-                    hash_to_processed[hash_key] = ProcessedObject(
-                        resolved=obj_to_update,
-                        reference_id=similar_obj.reference_id,
-                        hash_key=hash_key,
-                        is_new=False,
-                        has_updates=True,
-                    )
-                else:
-                    # No updates needed, just link to existing object
-                    obj_to_update = hash_to_object[hash_key]
-                    obj_to_update.reference_id = similar_obj.reference_id
-
-                    hash_to_processed[hash_key] = ProcessedObject(
-                        resolved=obj_to_update,
-                        reference_id=similar_obj.reference_id,
-                        hash_key=hash_key,
-                        is_new=False,
-                        has_updates=False,
-                    )
-            else:
-                # Objects are different or no similar object - create new one
-                obj_to_update = hash_to_object[hash_key]
-                db_id = await self._insert_object_into_db(obj_to_update)
-
-                # Set the reference_id directly
-                obj_to_update.reference_id = db_id
-
-                hash_to_processed[hash_key] = ProcessedObject(
-                    resolved=obj_to_update,
-                    reference_id=db_id,
-                    hash_key=hash_key,
-                    is_new=True,
-                    has_updates=False,
-                )
-
-        # Process any remaining objects that weren't in verification results
-        for obj in objects:
-            hash_key = obj.hash_key
-            if hash_key not in hash_to_processed:
-                # Create a new database entry
-                db_id = await self._insert_object_into_db(obj)
-
-                # Set the reference_id directly
-                obj.reference_id = db_id
-
-                hash_to_processed[hash_key] = ProcessedObject(
-                    resolved=obj,
-                    reference_id=db_id,
-                    hash_key=hash_key,
-                    is_new=True,
-                    has_updates=False,
-                )
-
-        # Compute new embeddings in batch if needed
-        if descriptions_to_embed:
+            # 5b) do a batch embed
             new_embeddings = await self.embedding_provider.embed(
-                texts=descriptions_to_embed,
+                texts=new_texts,
                 truncation=True,
                 embed_prompt=self.EMBED_PROMPT,
             )
 
-            # Update objects with new embeddings sequentially instead of in parallel
-            for i, (obj_to_update, hash_key) in enumerate(objects_to_update):
-                # Update the embedding in the object directly
+            # 5c) update each object's embedding in-memory & in the DB
+            for i, (obj_to_update, hk) in enumerate(updated_objs):
                 obj_to_update.embedding = new_embeddings[i]
-
-                # Update the object in the database
+                # update DB
                 await self._update_object_in_db(
                     obj_to_update.reference_id,
                     {"embedding": new_embeddings[i]},
                 )
 
-        # Convert processed objects back to original type and maintain dictionary structure
-        resolved_dict = {}
-        for hash_key, obj in objects_dict.items():
-            if hash_key in hash_to_processed:
-                processed = hash_to_processed[hash_key]
-                # Convert the processed model back to the original object type
-                resolved_dict[hash_key] = self._model_to_object(processed.resolved, obj)
-            else:
-                # This should not happen, but just in case
-                logger.warning(
-                    f"Object with hash {hash_key} was not processed, using original"
+                # Mark that we have effectively updated the DB
+                processed = hash_to_processed[hk]
+                hash_to_processed[hk] = ProcessedObject(
+                    resolved=obj_to_update,
+                    reference_id=obj_to_update.reference_id,
+                    hash_key=processed.hash_key,
+                    is_new=processed.is_new,
+                    has_updates=True,  # or True if partial updates were applied
                 )
-                resolved_dict[hash_key] = obj
+
+        # ----- 6) Convert processed objects back to original types in the final dictionary -----
+        resolved_dict = {}
+        for hk, original_obj in objects_dict.items():
+            if hk in hash_to_processed:
+                processed = hash_to_processed[hk]
+                # Convert the processed model back to the original object type
+                resolved_dict[hk] = self._model_to_object(
+                    processed.resolved, original_obj
+                )
+            else:
+                logger.warning(
+                    f"Object with hash {hk} was not processed at all, using original"
+                )
+                resolved_dict[hk] = original_obj
 
         return resolved_dict
+
+    async def _safe_insert(self, obj: ObjectWithEmbedding) -> int:
+        """
+        Insert the object into the DB with concurrency check.
+        This tries to prevent duplicates if another parallel task
+        inserted a matching item simultaneously.
+
+        In practice, you should enforce a unique constraint in the DB
+        (e.g., on a canonical name or an embedding-based fingerprint)
+        and handle IntegrityError with a fallback SELECT.
+        """
+        # Optionally search the DB to see if a row with the same canonical name
+        # or embedding signature just appeared. If found, reuse that ID.
+        maybe_id = await self._find_duplicate_in_db(obj)
+        if maybe_id is not None:
+            return maybe_id
+
+        # Otherwise, proceed with an insert
+        new_id = await self._insert_object_into_db(obj)
+        return new_id
+
+    async def _find_duplicate_in_db(self, obj: ObjectWithEmbedding) -> Optional[int]:
+        """
+        Example concurrency check: see if a row with the same name
+        or other signature was just inserted.
+
+        For robust concurrency handling:
+        - Add a UNIQUE constraint in the DB for the name or an embedding hash
+        - Catch IntegrityError
+        - If so, SELECT the row to find its ID
+        """
+        # For demonstration, we just do a quick name check:
+        query = f"""
+            SELECT id
+            FROM {self.table_name}
+            WHERE name = $1
+            LIMIT 1
+        """
+        row = await self.conn.fetchrow(query, obj.name)
+        if row:
+            return row["id"]
+        return None
+
+    # async def _process_verification_results(
+    #     self,
+    #     objects: List[ObjectWithEmbedding],
+    #     verification_results: List[VerificationResult[ObjectWithEmbedding]],
+    #     objects_dict: Dict[str, T],
+    # ) -> Dict[str, T]:
+    #     """
+    #     Process verification results and update/create objects.
+
+    #     Args:
+    #         objects: Original list of objects with embeddings
+    #         verification_results: Results from LLM verification
+    #         objects_dict: Original dictionary of objects
+
+    #     Returns:
+    #         Dictionary mapping from the same hash keys to resolved objects with database references
+    #     """
+    #     # Create a mapping from hash_key to the original object for direct updates
+    #     hash_to_object = {obj.hash_key: obj for obj in objects}
+
+    #     # Dictionary to track processed objects by their hash key
+    #     hash_to_processed: Dict[str, ProcessedObject[ObjectWithEmbedding]] = {}
+
+    #     # Track groups of objects that are the same entity but have no DB reference yet
+    #     # This maps from a representative hash_key to a set of all hash_keys in the same group
+    #     same_entity_groups: Dict[str, Set[str]] = {}
+
+    #     # Maps from a hash_key to its representative hash_key in a group
+    #     hash_to_group_rep: Dict[str, str] = {}
+
+    #     # Track objects that need embedding updates
+    #     objects_to_update = []
+    #     descriptions_to_embed = []
+
+    #     # First pass: Identify groups of objects that represent the same entity
+    #     for result in verification_results:
+    #         input_obj = result.pair.input_object
+    #         similar_obj = result.pair.similar_object
+    #         input_hash_key = input_obj.hash_key
+
+    #         if similar_obj and result.are_same:
+    #             similar_hash_key = similar_obj.hash_key
+
+    #             # If both objects don't have a reference yet, they should be grouped
+    #             if similar_obj.reference_id is None:
+    #                 # Check if either object is already in a group
+    #                 input_group_rep = hash_to_group_rep.get(input_hash_key)
+    #                 similar_group_rep = hash_to_group_rep.get(similar_hash_key)
+
+    #                 if input_group_rep and similar_group_rep:
+    #                     # Both are in groups, merge the groups
+    #                     if input_group_rep != similar_group_rep:
+    #                         # Merge the smaller group into the larger one for efficiency
+    #                         if len(same_entity_groups[input_group_rep]) < len(
+    #                             same_entity_groups[similar_group_rep]
+    #                         ):
+    #                             merge_from, merge_to = (
+    #                                 input_group_rep,
+    #                                 similar_group_rep,
+    #                             )
+    #                         else:
+    #                             merge_from, merge_to = (
+    #                                 similar_group_rep,
+    #                                 input_group_rep,
+    #                             )
+
+    #                         # Update all hash keys in the smaller group to point to the larger group
+    #                         for hash_key in same_entity_groups[merge_from]:
+    #                             hash_to_group_rep[hash_key] = merge_to
+    #                             same_entity_groups[merge_to].add(hash_key)
+
+    #                         # Remove the smaller group
+    #                         same_entity_groups.pop(merge_from)
+    #                 elif input_group_rep:
+    #                     # Input object is in a group, add similar object to the same group
+    #                     same_entity_groups[input_group_rep].add(similar_hash_key)
+    #                     hash_to_group_rep[similar_hash_key] = input_group_rep
+    #                 elif similar_group_rep:
+    #                     # Similar object is in a group, add input object to the same group
+    #                     same_entity_groups[similar_group_rep].add(input_hash_key)
+    #                     hash_to_group_rep[input_hash_key] = similar_group_rep
+    #                 else:
+    #                     # Neither is in a group, create a new group with input_hash_key as representative
+    #                     same_entity_groups[input_hash_key] = {
+    #                         input_hash_key,
+    #                         similar_hash_key,
+    #                     }
+    #                     hash_to_group_rep[input_hash_key] = input_hash_key
+    #                     hash_to_group_rep[similar_hash_key] = input_hash_key
+
+    #     # Process verification results
+    #     for result in verification_results:
+    #         input_obj = result.pair.input_object
+    #         similar_obj = result.pair.similar_object
+    #         hash_key = input_obj.hash_key
+
+    #         # Skip if we've already processed this input object
+    #         if hash_key in hash_to_processed:
+    #             continue
+
+    #         if result.are_same and similar_obj:
+    #             # Check if the similar object has a reference_id
+    #             if similar_obj.reference_id is None:
+    #                 # See if this object is part of a group without a database reference
+    #                 group_rep_key = hash_to_group_rep.get(hash_key)
+
+    #                 # Skip if this is not the representative of its group - it will be handled when the rep is processed
+    #                 if group_rep_key and group_rep_key != hash_key:
+    #                     continue
+
+    #                 # This is either not in a group or is the representative of its group
+    #                 # Apply updates from verification
+    #                 obj_to_update = hash_to_object[hash_key]
+    #                 if result.updated_name:
+    #                     obj_to_update.name = result.updated_name
+    #                 if result.updated_description:
+    #                     obj_to_update.description = result.updated_description
+
+    #                 # Create a new database entry
+    #                 db_id = await self._insert_object_into_db(obj_to_update)
+
+    #                 # Set the reference_id directly
+    #                 obj_to_update.reference_id = db_id
+
+    #                 processed_obj = ProcessedObject(
+    #                     resolved=obj_to_update,
+    #                     reference_id=db_id,
+    #                     hash_key=hash_key,
+    #                     is_new=True,
+    #                     has_updates=False,
+    #                 )
+
+    #                 hash_to_processed[hash_key] = processed_obj
+
+    #                 # If this is a group representative, process all objects in the group
+    #                 if (
+    #                     group_rep_key
+    #                     and hash_key == group_rep_key
+    #                     and hash_key in same_entity_groups
+    #                 ):
+    #                     # Update all objects in the group to have the same reference
+    #                     for grouped_hash_key in same_entity_groups[hash_key]:
+    #                         if (
+    #                             grouped_hash_key != hash_key
+    #                         ):  # Skip the representative, already processed
+    #                             grouped_obj = hash_to_object[grouped_hash_key]
+    #                             grouped_obj.reference_id = db_id
+
+    #                             # Apply the same updates to all objects in the group
+    #                             if result.updated_name:
+    #                                 grouped_obj.name = result.updated_name
+    #                             if result.updated_description:
+    #                                 grouped_obj.description = result.updated_description
+
+    #                             hash_to_processed[grouped_hash_key] = ProcessedObject(
+    #                                 resolved=grouped_obj,
+    #                                 reference_id=db_id,
+    #                                 hash_key=grouped_hash_key,
+    #                                 is_new=False,  # Not a new entry, linked to the representative
+    #                                 has_updates=False,
+    #                             )
+
+    #                 continue
+
+    #             # Objects are the same - either link or update
+    #             updated_name = result.updated_name
+    #             updated_description = result.updated_description
+
+    #             # Determine if we need to update the existing object
+    #             if updated_name or updated_description:
+    #                 # Get the original object to update
+    #                 obj_to_update = hash_to_object[hash_key]
+
+    #                 # Update the object
+    #                 if updated_name:
+    #                     obj_to_update.name = updated_name
+    #                 if updated_description:
+    #                     obj_to_update.description = updated_description
+
+    #                 # Set the reference_id
+    #                 obj_to_update.reference_id = similar_obj.reference_id
+
+    #                 # Update the object in the database
+    #                 await self._update_object_in_db(
+    #                     similar_obj.reference_id,
+    #                     {
+    #                         "name": obj_to_update.name,
+    #                         "description": obj_to_update.description,
+    #                     },
+    #                 )
+
+    #                 # Queue for embedding update if description changed
+    #                 if updated_description:
+    #                     objects_to_update.append((obj_to_update, hash_key))
+    #                     descriptions_to_embed.append(obj_to_update.description)
+
+    #                 # Store in our results
+    #                 hash_to_processed[hash_key] = ProcessedObject(
+    #                     resolved=obj_to_update,
+    #                     reference_id=similar_obj.reference_id,
+    #                     hash_key=hash_key,
+    #                     is_new=False,
+    #                     has_updates=True,
+    #                 )
+    #             else:
+    #                 # No updates needed, just link to existing object
+    #                 obj_to_update = hash_to_object[hash_key]
+    #                 obj_to_update.reference_id = similar_obj.reference_id
+
+    #                 hash_to_processed[hash_key] = ProcessedObject(
+    #                     resolved=obj_to_update,
+    #                     reference_id=similar_obj.reference_id,
+    #                     hash_key=hash_key,
+    #                     is_new=False,
+    #                     has_updates=False,
+    #                 )
+    #         else:
+    #             # Objects are different or no similar object - create new one
+    #             obj_to_update = hash_to_object[hash_key]
+    #             db_id = await self._insert_object_into_db(obj_to_update)
+
+    #             # Set the reference_id directly
+    #             obj_to_update.reference_id = db_id
+
+    #             hash_to_processed[hash_key] = ProcessedObject(
+    #                 resolved=obj_to_update,
+    #                 reference_id=db_id,
+    #                 hash_key=hash_key,
+    #                 is_new=True,
+    #                 has_updates=False,
+    #             )
+
+    #     # Process any remaining objects that weren't in verification results
+    #     for obj in objects:
+    #         hash_key = obj.hash_key
+
+    #         # Check if this object is part of a group that's already been processed
+    #         group_rep_key = hash_to_group_rep.get(hash_key)
+    #         if (
+    #             group_rep_key
+    #             and group_rep_key != hash_key
+    #             and group_rep_key in hash_to_processed
+    #         ):
+    #             # This object is in a group and the representative has already been processed
+    #             # Use the same reference_id as the representative
+    #             rep_processed = hash_to_processed[group_rep_key]
+
+    #             obj.reference_id = rep_processed.reference_id
+
+    #             hash_to_processed[hash_key] = ProcessedObject(
+    #                 resolved=obj,
+    #                 reference_id=rep_processed.reference_id,
+    #                 hash_key=hash_key,
+    #                 is_new=False,  # Not a new entry, linked to the representative
+    #                 has_updates=False,
+    #             )
+    #             continue
+
+    #         if hash_key not in hash_to_processed:
+    #             # Create a new database entry
+    #             db_id = await self._insert_object_into_db(obj)
+
+    #             # Set the reference_id directly
+    #             obj.reference_id = db_id
+
+    #             hash_to_processed[hash_key] = ProcessedObject(
+    #                 resolved=obj,
+    #                 reference_id=db_id,
+    #                 hash_key=hash_key,
+    #                 is_new=True,
+    #                 has_updates=False,
+    #             )
+
+    #     # Compute new embeddings in batch if needed
+    #     if descriptions_to_embed:
+    #         new_embeddings = await self.embedding_provider.embed(
+    #             texts=descriptions_to_embed,
+    #             truncation=True,
+    #             embed_prompt=self.EMBED_PROMPT,
+    #         )
+
+    #         # Update objects with new embeddings sequentially instead of in parallel
+    #         for i, (obj_to_update, hash_key) in enumerate(objects_to_update):
+    #             # Update the embedding in the object directly
+    #             obj_to_update.embedding = new_embeddings[i]
+
+    #             # Update the object in the database
+    #             await self._update_object_in_db(
+    #                 obj_to_update.reference_id,
+    #                 {"embedding": new_embeddings[i]},
+    #             )
+
+    #     # Convert processed objects back to original type and maintain dictionary structure
+    #     resolved_dict = {}
+    #     for hash_key, obj in objects_dict.items():
+    #         if hash_key in hash_to_processed:
+    #             processed = hash_to_processed[hash_key]
+    #             # Convert the processed model back to the original object type
+    #             resolved_dict[hash_key] = self._model_to_object(processed.resolved, obj)
+    #         else:
+    #             # This should not happen, but just in case
+    #             logger.warning(
+    #                 f"Object with hash {hash_key} was not processed, using original"
+    #             )
+    #             resolved_dict[hash_key] = obj
+
+    #     return resolved_dict
 
     async def _update_object_in_db(
         self, object_id: int, updates: Dict[str, Any]

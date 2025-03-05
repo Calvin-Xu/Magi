@@ -38,7 +38,7 @@ class OpenAIResolver(Resolver[T]):
         embedding_provider,
         table_name: str,
         reference_column: str = "id",
-        similarity_threshold: float = 0.8,
+        similarity_threshold: float = 0.4,
         max_tokens_per_batch: int = 4000,
         model: str = "gpt-4o",
         temperature: float = 0.0,
@@ -87,7 +87,7 @@ class OpenAIResolver(Resolver[T]):
             tpm=2_000_000,  # 2,000,000 tokens per minute
             window_size=60,
             num_shards=10,
-            max_concurrent=5,
+            max_concurrent=self.max_concurrent_requests,
         )
 
     def _count_tokens(self, text: str) -> int:
@@ -167,7 +167,7 @@ class OpenAIResolver(Resolver[T]):
             return [
                 ModelVerificationResult(
                     pair=pair,
-                    is_same=False,
+                    are_same=False,
                     updated_name=None,
                     updated_description=None,
                 )
@@ -219,6 +219,7 @@ class OpenAIResolver(Resolver[T]):
 
             # Process the results
             verification_results = response.choices[0].message.parsed
+            logger.info(f"Verification results: {verification_results}")
             processed_results = []
 
             # Keep track of which pairs have been processed
@@ -239,7 +240,7 @@ class OpenAIResolver(Resolver[T]):
                 processed_results.append(
                     ModelVerificationResult(
                         pair=pair,
-                        is_same=result.is_same,
+                        are_same=result.are_same,
                         updated_name=result.updated_name,
                         updated_description=result.updated_description,
                     )
@@ -260,7 +261,7 @@ class OpenAIResolver(Resolver[T]):
                     processed_results.append(
                         ModelVerificationResult(
                             pair=pair,
-                            is_same=False,
+                            are_same=False,
                             updated_name=None,
                             updated_description=None,
                         )
@@ -274,7 +275,7 @@ class OpenAIResolver(Resolver[T]):
             return [
                 ModelVerificationResult(
                     pair=pair,
-                    is_same=False,
+                    are_same=False,
                     updated_name=None,
                     updated_description=None,
                 )

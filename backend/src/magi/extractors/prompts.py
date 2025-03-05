@@ -14,10 +14,12 @@ For each relationship, extract the following information:
    - A canonical name of the subject you identify; use this name consistently for all relationships
 2. subject_description
    - A globally unique, disambiguating description of the subject (including aliases, distinguishing attributes, etc.) that begins with subject's name; instance names must still be specifically identifiable despite the description.
+   - Compose descriptions using both your best knowledge of the subject and information from the text
 3. object
 4. object_description
 5. predicate
    - A short label describing the relationship between the subject and object. Use established relationship types (e.g., "is a", "part of", "has a", "has property", "created", etc.) where possible.
+   - Use the present tense only for relationships that will always be true, now or in the future.
 6. predicate_description
 7. constraint_condition
    - A concise description of the conditions under which the statement formed by `subject-predicate-object` holds if it is not always true (in which case write "None"); for temporal constraints, include the most datetimes available;

@@ -54,7 +54,7 @@ class VerificationResult(BaseModel, Generic[T]):
     """Model for the result of object verification."""
 
     pair: ObjectPair[T] = Field(..., description="Pair of objects being verified")
-    is_same: bool = False
+    are_same: bool = False
     updated_name: Optional[str] = None
     updated_description: Optional[str] = None
 
@@ -75,7 +75,7 @@ class LLMVerificationResult(BaseModel):
     """Model for the LLM to return verification results."""
 
     pair_id: int = Field(..., description="ID of the pair being verified")
-    is_same: bool = Field(
+    are_same: bool = Field(
         ..., description="Whether the objects refer to the same entity or concept"
     )
     updated_name: Optional[str] = Field(

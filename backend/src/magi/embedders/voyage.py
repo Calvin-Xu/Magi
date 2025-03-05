@@ -1,4 +1,5 @@
 from typing import List, Optional
+import asyncio
 
 import voyageai
 
@@ -10,7 +11,11 @@ from .base import EmbeddingProvider
 class VoyageEmbeddingProvider(EmbeddingProvider):
     """Concrete implementation of EmbeddingProvider using Voyage AI's voyage-3-large."""
 
-    def __init__(self, api_key: str = VOYAGE_AI_CONFIG["api_key"]):
+    def __init__(
+        self,
+        api_key: str = VOYAGE_AI_CONFIG["api_key"],
+        max_concurrent_requests: int = 20,
+    ):
         self.client = voyageai.Client(api_key=api_key)
         self.rate_limiter = DistributedRateLimiter()
         self.model = "voyage-3-large"
@@ -20,8 +25,9 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
             tpm=3_000_000,  # Tokens per minute
             window_size=60,
             num_shards=10,
-            max_concurrent=5,
+            max_concurrent=max_concurrent_requests,
         )
+        self.max_concurrent_requests = max_concurrent_requests
 
     @property
     def max_batch_size(self) -> int:
@@ -76,27 +82,47 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
             if current_chunk:
                 chunked_texts.append(current_chunk)
 
-            # Embed each chunk and combine results
-            all_embeddings = []
-            for chunk in chunked_texts:
-                tokens = self.client.count_tokens(chunk, model=self.model)
-                await self.rate_limiter.acquire(self.rate_limit, tokens=tokens)
+            # Create a semaphore to limit concurrent requests
+            semaphore = asyncio.Semaphore(self.max_concurrent_requests)
 
-                result = self.client.embed(
-                    chunk,
-                    model=self.model,
-                    input_type=input_type,
-                    truncation=truncation,
-                    output_dimension=output_dimension,
-                )
-                all_embeddings.extend(result.embeddings)
+            # Define a function to embed a single chunk with rate limiting
+            async def embed_chunk(chunk):
+                async with semaphore:
+                    tokens = self.client.count_tokens(chunk, model=self.model)
+                    await self.rate_limiter.acquire(self.rate_limit, tokens=tokens)
+
+                    # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
+                    result = await asyncio.to_thread(
+                        self.client.embed,
+                        chunk,
+                        model=self.model,
+                        input_type=input_type,
+                        truncation=truncation,
+                        output_dimension=output_dimension,
+                    )
+                    return result.embeddings
+
+            # Create tasks for all chunks
+            embedding_tasks = [embed_chunk(chunk) for chunk in chunked_texts]
+
+            # Execute all tasks concurrently and gather results
+            chunk_embeddings = await asyncio.gather(*embedding_tasks)
+
+            # Flatten the results
+            all_embeddings = [
+                embedding
+                for chunk_result in chunk_embeddings
+                for embedding in chunk_result
+            ]
 
             return all_embeddings
         else:
             # If within limits, proceed with a single request
             await self.rate_limiter.acquire(self.rate_limit, tokens=total_tokens)
 
-            result = self.client.embed(
+            # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
+            result = await asyncio.to_thread(
+                self.client.embed,
                 texts,
                 model=self.model,
                 input_type=input_type,
