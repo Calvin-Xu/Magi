@@ -42,7 +42,7 @@ class OpenAIResolver(Resolver[T]):
         max_tokens_per_batch: int = 4000,
         model: str = "gpt-4o",
         temperature: float = 0.0,
-        api_key: str = OPENAI_CONFIG["api_key"],
+        api_key: str = OPENAI_CONFIG.api_key,
     ):
         """
         Initialize the OpenAI resolver.

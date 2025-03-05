@@ -133,11 +133,11 @@ def create_gradio_app() -> gr.Blocks:
 
         async def load_data():
             conn = await asyncpg.connect(
-                host=POSTGRES_CONFIG["host"],
-                port=POSTGRES_CONFIG["port"],
-                user=POSTGRES_CONFIG["user"],
-                password=POSTGRES_CONFIG["password"],
-                database=POSTGRES_CONFIG["database"],
+                host=POSTGRES_CONFIG.host,
+                port=POSTGRES_CONFIG.port,
+                user=POSTGRES_CONFIG.user,
+                password=POSTGRES_CONFIG.password,
+                database=POSTGRES_CONFIG.database,
             )
 
             entities = await conn.fetch(
@@ -214,11 +214,11 @@ def create_gradio_app() -> gr.Blocks:
             """Process text files and extract relationships."""
 
             conn = await asyncpg.connect(
-                host=POSTGRES_CONFIG["host"],
-                port=POSTGRES_CONFIG["port"],
-                user=POSTGRES_CONFIG["user"],
-                password=POSTGRES_CONFIG["password"],
-                database=POSTGRES_CONFIG["database"],
+                host=POSTGRES_CONFIG.host,
+                port=POSTGRES_CONFIG.port,
+                user=POSTGRES_CONFIG.user,
+                password=POSTGRES_CONFIG.password,
+                database=POSTGRES_CONFIG.database,
             )
 
             if not uri:
@@ -270,11 +270,11 @@ def create_gradio_app() -> gr.Blocks:
         async def wipe_all_data() -> str:
             """Wipe all data from entities, relationship_types, and relationships tables."""
             conn = await asyncpg.connect(
-                host=POSTGRES_CONFIG["host"],
-                port=POSTGRES_CONFIG["port"],
-                user=POSTGRES_CONFIG["user"],
-                password=POSTGRES_CONFIG["password"],
-                database=POSTGRES_CONFIG["database"],
+                host=POSTGRES_CONFIG.host,
+                port=POSTGRES_CONFIG.port,
+                user=POSTGRES_CONFIG.user,
+                password=POSTGRES_CONFIG.password,
+                database=POSTGRES_CONFIG.database,
             )
 
             await conn.execute(
@@ -285,7 +285,7 @@ def create_gradio_app() -> gr.Blocks:
             from gqlalchemy import Memgraph
             from magi.config import MEMGRAPH_CONFIG
 
-            mg = Memgraph(host=MEMGRAPH_CONFIG["host"], port=MEMGRAPH_CONFIG["port"])
+            mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
             mg.execute("MATCH (n) DETACH DELETE n;")
 
             return "All data wiped from tables."

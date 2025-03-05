@@ -52,7 +52,7 @@ class Resolver(Generic[T], ABC):
         max_tokens_per_batch: int = 4000,
         candidate_epsilon: float = 0.05,
         db_candidate_limit: int = 1,
-        max_concurrent_requests: int = 20,
+        max_concurrent_requests: int = 40,
     ):
         """
         Initialize the resolver with database connection and parameters.

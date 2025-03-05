@@ -1,8 +1,9 @@
 """Configuration module for Magi."""
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -14,73 +15,127 @@ def _load_env_file() -> None:
         load_dotenv(env_path, override=True)
 
 
-class Config:
-    """Static configuration class."""
+@dataclass(frozen=True)
+class PostgresConfig:
+    """PostgreSQL database configuration."""
 
-    # Load .env file only in driver process
-    if os.environ.get("SPARK_EXECUTOR_ID") is None:
-        _load_env_file()
-
-    # Static configuration that gets serialized with Spark tasks
-    CONFIG: Dict[str, Any] = {
-        "postgres": {
-            "host": os.getenv("POSTGRES_HOST", "postgres"),
-            "port": int(os.getenv("POSTGRES_PORT", "5432")),
-            "database": os.getenv("POSTGRES_DB", "magidb"),
-            "user": os.getenv("POSTGRES_USER", "magiuser"),
-            "password": os.getenv("POSTGRES_PASSWORD", "magipassword"),
-        },
-        "memgraph": {
-            "host": os.getenv("MEMGRAPH_HOST", "memgraph"),
-            "port": int(os.getenv("MEMGRAPH_PORT", "7687")),
-        },
-        "memgraph_lab": {
-            "host": os.getenv("MEMGRAPH_LAB_HOST", "memgraph-lab"),
-            "port": int(os.getenv("MEMGRAPH_LAB_PORT", "3000")),
-        },
-        "magi": {
-            "port": int(os.getenv("MAGI_PORT", "1998")),
-        },
-        "aws": {
-            "access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
-            "secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
-            "role_arn": os.getenv("AWS_ROLE_ARN"),
-        },
-        "file_processor": {
-            "max_concurrent_downloads": int(
-                os.getenv("MAGI_MAX_CONCURRENT_DOWNLOADS", "50")
-            ),
-            "batch_size": int(os.getenv("MAGI_BATCH_SIZE", "1000")),
-            "max_retries": int(os.getenv("MAGI_MAX_RETRIES", "3")),
-        },
-        "redis": {
-            "host": os.getenv("REDIS_HOST", "redis"),
-            "port": int(os.getenv("REDIS_PORT", "6379")),
-        },
-        "gemini": {
-            "api_key": os.getenv("GEMINI_API_KEY"),
-        },
-        "voyage_ai": {
-            "api_key": os.getenv("VOYAGE_AI_API_KEY"),
-        },
-        "openai": {
-            "api_key": os.getenv("OPENAI_API_KEY"),
-        },
-        "openrouter": {
-            "api_key": os.getenv("OPENROUTER_API_KEY"),
-        },
-    }
+    host: str = field(default_factory=lambda: os.getenv("POSTGRES_HOST", "postgres"))
+    port: int = field(default_factory=lambda: int(os.getenv("POSTGRES_PORT", "5432")))
+    database: str = field(default_factory=lambda: os.getenv("POSTGRES_DB", "magidb"))
+    user: str = field(default_factory=lambda: os.getenv("POSTGRES_USER", "magiuser"))
+    password: str = field(
+        default_factory=lambda: os.getenv("POSTGRES_PASSWORD", "magipassword")
+    )
 
 
-# Export configuration sections as module-level constants
-POSTGRES_CONFIG = Config.CONFIG["postgres"]
-MEMGRAPH_CONFIG = Config.CONFIG["memgraph"]
-MEMGRAPH_LAB_CONFIG = Config.CONFIG["memgraph_lab"]
-MAGI_CONFIG = Config.CONFIG["magi"]
-AWS_CONFIG = Config.CONFIG["aws"]
-FILE_PROCESSOR_CONFIG = Config.CONFIG["file_processor"]
-GEMINI_CONFIG = Config.CONFIG["gemini"]
-REDIS_CONFIG = Config.CONFIG["redis"]
-VOYAGE_AI_CONFIG = Config.CONFIG["voyage_ai"]
-OPENAI_CONFIG = Config.CONFIG["openai"]
-OPENROUTER_CONFIG = Config.CONFIG["openrouter"]
+@dataclass(frozen=True)
+class MemgraphConfig:
+    """Memgraph database configuration."""
+
+    host: str = field(default_factory=lambda: os.getenv("MEMGRAPH_HOST", "memgraph"))
+    port: int = field(default_factory=lambda: int(os.getenv("MEMGRAPH_PORT", "7687")))
+
+
+@dataclass(frozen=True)
+class MemgraphLabConfig:
+    """Memgraph Lab configuration."""
+
+    host: str = field(
+        default_factory=lambda: os.getenv("MEMGRAPH_LAB_HOST", "memgraph-lab")
+    )
+    port: int = field(
+        default_factory=lambda: int(os.getenv("MEMGRAPH_LAB_PORT", "3000"))
+    )
+
+
+@dataclass(frozen=True)
+class MagiConfig:
+    """Magi application configuration."""
+
+    port: int = field(default_factory=lambda: int(os.getenv("MAGI_PORT", "1998")))
+
+
+@dataclass(frozen=True)
+class AWSConfig:
+    """AWS configuration."""
+
+    access_key_id: Optional[str] = field(
+        default_factory=lambda: os.getenv("AWS_ACCESS_KEY_ID")
+    )
+    secret_access_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("AWS_SECRET_ACCESS_KEY")
+    )
+    role_arn: Optional[str] = field(default_factory=lambda: os.getenv("AWS_ROLE_ARN"))
+
+
+@dataclass(frozen=True)
+class FileProcessorConfig:
+    """File processor configuration."""
+
+    max_concurrent_downloads: int = field(
+        default_factory=lambda: int(os.getenv("MAGI_MAX_CONCURRENT_DOWNLOADS", "50"))
+    )
+    batch_size: int = field(
+        default_factory=lambda: int(os.getenv("MAGI_BATCH_SIZE", "1000"))
+    )
+    max_retries: int = field(
+        default_factory=lambda: int(os.getenv("MAGI_MAX_RETRIES", "3"))
+    )
+
+
+@dataclass(frozen=True)
+class RedisConfig:
+    """Redis configuration."""
+
+    host: str = field(default_factory=lambda: os.getenv("REDIS_HOST", "redis"))
+    port: int = field(default_factory=lambda: int(os.getenv("REDIS_PORT", "6379")))
+
+
+@dataclass(frozen=True)
+class GeminiConfig:
+    """Gemini API configuration."""
+
+    api_key: Optional[str] = field(default_factory=lambda: os.getenv("GEMINI_API_KEY"))
+
+
+@dataclass(frozen=True)
+class VoyageAIConfig:
+    """Voyage AI configuration."""
+
+    api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("VOYAGE_AI_API_KEY")
+    )
+
+
+@dataclass(frozen=True)
+class OpenAIConfig:
+    """OpenAI configuration."""
+
+    api_key: Optional[str] = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+
+
+@dataclass(frozen=True)
+class OpenRouterConfig:
+    """OpenRouter configuration."""
+
+    api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("OPENROUTER_API_KEY")
+    )
+
+
+# Load .env file only in driver process
+if os.environ.get("SPARK_EXECUTOR_ID") is None:
+    _load_env_file()
+
+# Create and export configuration instances as module-level constants
+POSTGRES_CONFIG = PostgresConfig()
+MEMGRAPH_CONFIG = MemgraphConfig()
+MEMGRAPH_LAB_CONFIG = MemgraphLabConfig()
+MAGI_CONFIG = MagiConfig()
+AWS_CONFIG = AWSConfig()
+FILE_PROCESSOR_CONFIG = FileProcessorConfig()
+REDIS_CONFIG = RedisConfig()
+GEMINI_CONFIG = GeminiConfig()
+VOYAGE_AI_CONFIG = VoyageAIConfig()
+OPENAI_CONFIG = OpenAIConfig()
+OPENROUTER_CONFIG = OpenRouterConfig()

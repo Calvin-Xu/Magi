@@ -41,9 +41,7 @@ class DistributedRateLimiter:
     ):
         """Initialize rate limiter."""
         self.jitter_factor = jitter_factor
-        self.redis = redis.from_url(
-            f"redis://{REDIS_CONFIG['host']}:{REDIS_CONFIG['port']}"
-        )
+        self.redis = redis.from_url(f"redis://{REDIS_CONFIG.host}:{REDIS_CONFIG.port}")
         self._locks: Dict[str, asyncio.Lock] = {}
         self._semaphores: Dict[str, asyncio.Semaphore] = {}
 

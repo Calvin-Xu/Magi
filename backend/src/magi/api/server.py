@@ -14,11 +14,11 @@ from magi.ui.app import create_gradio_app
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = await asyncpg.connect(
-        host=POSTGRES_CONFIG["host"],
-        port=POSTGRES_CONFIG["port"],
-        user=POSTGRES_CONFIG["user"],
-        password=POSTGRES_CONFIG["password"],
-        database=POSTGRES_CONFIG["database"],
+        host=POSTGRES_CONFIG.host,
+        port=POSTGRES_CONFIG.port,
+        user=POSTGRES_CONFIG.user,
+        password=POSTGRES_CONFIG.password,
+        database=POSTGRES_CONFIG.database,
     )
 
     # Check if we should reset the database

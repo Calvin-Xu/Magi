@@ -26,11 +26,11 @@ async def test_entity_resolution():
     """Test entity resolution with OpenAIResolver."""
     # Connect to PostgreSQL
     conn = await asyncpg.connect(
-        host=POSTGRES_CONFIG["host"],
-        port=POSTGRES_CONFIG["port"],
-        user=POSTGRES_CONFIG["user"],
-        password=POSTGRES_CONFIG["password"],
-        database=POSTGRES_CONFIG["database"],
+        host=POSTGRES_CONFIG.host,
+        port=POSTGRES_CONFIG.port,
+        user=POSTGRES_CONFIG.user,
+        password=POSTGRES_CONFIG.password,
+        database=POSTGRES_CONFIG.database,
     )
 
     try:
@@ -38,7 +38,7 @@ async def test_entity_resolution():
 
         # Initialize embedding provider
         embedding_provider = VoyageEmbeddingProvider(
-            api_key=VOYAGE_AI_CONFIG["api_key"],
+            api_key=VOYAGE_AI_CONFIG.api_key,
         )
 
         # Initialize OpenAI resolver for entities
@@ -51,7 +51,7 @@ async def test_entity_resolution():
             max_tokens_per_batch=4000,
             model="gpt-4o",
             temperature=0.0,
-            api_key=OPENAI_CONFIG["api_key"],
+            api_key=OPENAI_CONFIG.api_key,
         )
 
         # Create test entities
@@ -124,11 +124,11 @@ async def test_entity_resolution():
 #     """Test relationship type resolution with OpenAIResolver."""
 #     # Connect to PostgreSQL
 #     conn = await asyncpg.connect(
-#         host=POSTGRES_CONFIG["host"],
-#         port=POSTGRES_CONFIG["port"],
-#         user=POSTGRES_CONFIG["user"],
-#         password=POSTGRES_CONFIG["password"],
-#         database=POSTGRES_CONFIG["database"],
+#         host=POSTGRES_CONFIG.host,
+#         port=POSTGRES_CONFIG.port,
+#         user=POSTGRES_CONFIG.user,
+#         password=POSTGRES_CONFIG.password,
+#         database=POSTGRES_CONFIG.database,
 #     )
 
 #     try:
@@ -136,7 +136,7 @@ async def test_entity_resolution():
 
 #         # Initialize embedding provider
 #         embedding_provider = VoyageEmbeddingProvider(
-#             api_key=VOYAGE_AI_CONFIG["api_key"],
+#             api_key=VOYAGE_AI_CONFIG.api_key,
 #         )
 
 #         # Initialize OpenAI resolver for relationship types
@@ -149,7 +149,7 @@ async def test_entity_resolution():
 #             max_tokens_per_batch=4000,
 #             model="gpt-4o",
 #             temperature=0.0,
-#             api_key=OPENAI_CONFIG["api_key"],
+#             api_key=OPENAI_CONFIG.api_key,
 #         )
 
 #         # Create test relationship types
@@ -200,11 +200,11 @@ async def test_entity_resolution():
 #     """Test rate limiting functionality in OpenAIResolver."""
 #     # Connect to PostgreSQL
 #     conn = await asyncpg.connect(
-#         host=POSTGRES_CONFIG["host"],
-#         port=POSTGRES_CONFIG["port"],
-#         user=POSTGRES_CONFIG["user"],
-#         password=POSTGRES_CONFIG["password"],
-#         database=POSTGRES_CONFIG["database"],
+#         host=POSTGRES_CONFIG.host,
+#         port=POSTGRES_CONFIG.port,
+#         user=POSTGRES_CONFIG.user,
+#         password=POSTGRES_CONFIG.password,
+#         database=POSTGRES_CONFIG.database,
 #     )
 
 #     try:
@@ -212,7 +212,7 @@ async def test_entity_resolution():
 
 #         # Initialize embedding provider
 #         embedding_provider = VoyageEmbeddingProvider(
-#             api_key=VOYAGE_AI_CONFIG["api_key"],
+#             api_key=VOYAGE_AI_CONFIG.api_key,
 #         )
 
 #         # Initialize OpenAI resolver with custom rate limits for testing
@@ -225,7 +225,7 @@ async def test_entity_resolution():
 #             max_tokens_per_batch=4000,
 #             model="gpt-4o",
 #             temperature=0.0,
-#             api_key=OPENAI_CONFIG["api_key"],
+#             api_key=OPENAI_CONFIG.api_key,
 #         )
 
 #         # Override the rate limit for testing

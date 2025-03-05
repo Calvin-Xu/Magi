@@ -13,8 +13,8 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
 
     def __init__(
         self,
-        api_key: str = VOYAGE_AI_CONFIG["api_key"],
-        max_concurrent_requests: int = 20,
+        api_key: str = VOYAGE_AI_CONFIG.api_key,
+        max_concurrent_requests: int = 40,
     ):
         self.client = voyageai.Client(api_key=api_key)
         self.rate_limiter = DistributedRateLimiter()

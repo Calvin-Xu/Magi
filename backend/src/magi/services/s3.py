@@ -87,10 +87,10 @@ class S3DocumentReader:
         self.s3_client = s3_client
         self.credentials = credentials
         self.semaphore = asyncio.Semaphore(
-            FILE_PROCESSOR_CONFIG["max_concurrent_downloads"]
+            FILE_PROCESSOR_CONFIG.max_concurrent_downloads
         )
         self.executor = ThreadPoolExecutor(
-            max_workers=FILE_PROCESSOR_CONFIG["max_concurrent_downloads"]
+            max_workers=FILE_PROCESSOR_CONFIG.max_concurrent_downloads
         )
 
     async def read_documents(
@@ -110,7 +110,7 @@ class S3DocumentReader:
                 ):
                     current_batch.append(doc)
 
-                if len(current_batch) >= FILE_PROCESSOR_CONFIG["batch_size"]:
+                if len(current_batch) >= FILE_PROCESSOR_CONFIG.batch_size:
                     yield DocumentBatch(documents=current_batch)
                     current_batch = []
 

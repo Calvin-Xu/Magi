@@ -10,7 +10,7 @@ from .status import ServiceState, service_status
 
 
 async def check_memgraph(
-    host: str = MEMGRAPH_CONFIG["host"], port: int = MEMGRAPH_CONFIG["port"]
+    host: str = MEMGRAPH_CONFIG.host, port: int = MEMGRAPH_CONFIG.port
 ) -> None:
     """Check Memgraph connection."""
     try:
@@ -26,11 +26,11 @@ async def check_memgraph(
 
 
 async def check_postgres(
-    host: str = POSTGRES_CONFIG["host"],
-    port: int = POSTGRES_CONFIG["port"],
-    db: str = POSTGRES_CONFIG["database"],
-    user: str = POSTGRES_CONFIG["user"],
-    password: str = POSTGRES_CONFIG["password"],
+    host: str = POSTGRES_CONFIG.host,
+    port: int = POSTGRES_CONFIG.port,
+    db: str = POSTGRES_CONFIG.database,
+    user: str = POSTGRES_CONFIG.user,
+    password: str = POSTGRES_CONFIG.password,
 ) -> None:
     """Check PostgreSQL connection using asyncpg."""
     try:
@@ -77,7 +77,7 @@ async def check_spark() -> None:
 
 
 async def check_memgraph_lab(
-    host: str = MEMGRAPH_LAB_CONFIG["host"], port: int = MEMGRAPH_LAB_CONFIG["port"]
+    host: str = MEMGRAPH_LAB_CONFIG.host, port: int = MEMGRAPH_LAB_CONFIG.port
 ) -> None:
     """Check Memgraph Lab UI."""
     async with aiohttp.ClientSession() as session:

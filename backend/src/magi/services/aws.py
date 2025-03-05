@@ -18,8 +18,8 @@ class AWSCredentials:
     def get_effective_credentials(self) -> tuple[Optional[str], Optional[str]]:
         """Get effective credentials, falling back to environment variables."""
         return (
-            self.access_key_id or AWS_CONFIG["access_key_id"],
-            self.secret_access_key or AWS_CONFIG["secret_access_key"],
+            self.access_key_id or AWS_CONFIG.access_key_id,
+            self.secret_access_key or AWS_CONFIG.secret_access_key,
         )
 
 
@@ -50,11 +50,11 @@ def create_aws_client(
         aws_secret_access_key=secret_key,
     )
 
-    if assume_role and AWS_CONFIG["role_arn"]:
+    if assume_role and AWS_CONFIG.role_arn:
         # Assume role using STS
         sts = session.client("sts")
         assumed = sts.assume_role(
-            RoleArn=AWS_CONFIG["role_arn"],
+            RoleArn=AWS_CONFIG.role_arn,
             RoleSessionName="magi-session",
         )
         creds = assumed["Credentials"]

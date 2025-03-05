@@ -58,19 +58,19 @@ class ObjectResolutionProcessor(DocumentProcessor):
 
             # Create separate database connections for concurrent operations
             entity_conn = await asyncpg.connect(
-                host=POSTGRES_CONFIG["host"],
-                port=POSTGRES_CONFIG["port"],
-                user=POSTGRES_CONFIG["user"],
-                password=POSTGRES_CONFIG["password"],
-                database=POSTGRES_CONFIG["database"],
+                host=POSTGRES_CONFIG.host,
+                port=POSTGRES_CONFIG.port,
+                user=POSTGRES_CONFIG.user,
+                password=POSTGRES_CONFIG.password,
+                database=POSTGRES_CONFIG.database,
             )
 
             rel_type_conn = await asyncpg.connect(
-                host=POSTGRES_CONFIG["host"],
-                port=POSTGRES_CONFIG["port"],
-                user=POSTGRES_CONFIG["user"],
-                password=POSTGRES_CONFIG["password"],
-                database=POSTGRES_CONFIG["database"],
+                host=POSTGRES_CONFIG.host,
+                port=POSTGRES_CONFIG.port,
+                user=POSTGRES_CONFIG.user,
+                password=POSTGRES_CONFIG.password,
+                database=POSTGRES_CONFIG.database,
             )
 
             try:
@@ -574,7 +574,7 @@ class ObjectResolutionProcessor(DocumentProcessor):
             from gqlalchemy import Memgraph
             from magi.config import MEMGRAPH_CONFIG
 
-            mg = Memgraph(host=MEMGRAPH_CONFIG["host"], port=MEMGRAPH_CONFIG["port"])
+            mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
 
             async with self.conn.transaction():
                 for _, row in relationships_df.iterrows():

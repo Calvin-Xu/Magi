@@ -95,7 +95,7 @@ class GeminiExtractor(RelationshipExtractor):
         )
 
         # Initialize client and rate limiter
-        self.client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
+        self.client = genai.Client(api_key=GEMINI_CONFIG.api_key)
         self._rate_limiter = DistributedRateLimiter()
         self._model_limits = limits
         self.max_retries = max_retries
