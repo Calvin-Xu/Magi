@@ -55,3 +55,6 @@ class Relationship:
     FROM_ENTITY_HASH_COLUMN: str = "from_entity_hash"
     TO_ENTITY_HASH_COLUMN: str = "to_entity_hash"
     RELATIONSHIP_TYPE_HASH_COLUMN: str = "relationship_type_hash"
+    FROM_ENTITY_REFERENCE_COLUMN: str = "from_entity_reference"
+    TO_ENTITY_REFERENCE_COLUMN: str = "to_entity_reference"
+    RELATIONSHIP_TYPE_REFERENCE_COLUMN: str = "relationship_type_reference"

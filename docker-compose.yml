@@ -8,6 +8,7 @@ services:
       - "${MAGI_PORT:-8000}:8000"
     volumes:
       - ./backend/src:/app/src
+      - ./backend/tests:/app/tests
       - ./backend/pyproject.toml:/app/pyproject.toml
       - ./backend/uv.lock:/app/uv.lock
       - .env:/app/.env

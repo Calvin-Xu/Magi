@@ -1,21 +1,30 @@
 """Document processing pipeline."""
 
+import asyncio
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional, Protocol
+import hashlib
+import os
+from typing import AsyncIterator, List, Optional, Protocol, Tuple
+
+import asyncpg
+import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType
-import asyncio
 from pyspark.storagelevel import StorageLevel
-import pandas as pd
 
+from ..resolvers import Resolver
 from .aws import AWSCredentials, create_aws_client
+from .entity_reltype_processing import (
+    create_extracted_entities_df,
+    create_extracted_rel_types_df,
+    link_relationships_with_references,
+    save_relationships_to_db,
+)
+from .file_processor import create_relationship_extractor_udf
+from .models import Entity, Relationship, RelationshipType
 from .s3 import DocumentBatch, S3DocumentReader
 from .schemas import RELATIONSHIP_SCHEMA
-from .file_processor import create_relationship_extractor_udf
-from .models import Relationship
-
-import hashlib
 
 
 def generate_hash(name: str, description: str) -> str:
@@ -46,6 +55,8 @@ class RelationshipExtractorProcessor:
         # Create UDF for extraction
         extract_rels_udf = self.create_udf()
 
+        # https://community.databricks.com/t5/data-engineering/accelerating-row-wise-python-udf-functions-without-using-pandas/td-p/15328
+        df = df.repartition(os.cpu_count())
         # Extract relationships and cache BEFORE any transformations
         # (to avoid UDFs being run multiple times)
         df_with_json = df.withColumn(
@@ -88,30 +99,30 @@ class RelationshipExtractorProcessor:
         # Add hash columns for deduplication
         extracted_relationships_df = (
             extracted_relationships_df.withColumn(
-                "from_entity_hash",
+                Relationship.FROM_ENTITY_HASH_COLUMN,
                 F.md5(
                     F.concat_ws(
-                        ":",
+                        ": ",
                         F.col(Relationship.FROM_ENTITY_COLUMN),
                         F.col(Relationship.FROM_ENTITY_DESCRIPTION_COLUMN),
                     )
                 ),
             )
             .withColumn(
-                "to_entity_hash",
+                Relationship.TO_ENTITY_HASH_COLUMN,
                 F.md5(
                     F.concat_ws(
-                        ":",
+                        ": ",
                         F.col(Relationship.TO_ENTITY_COLUMN),
                         F.col(Relationship.TO_ENTITY_DESCRIPTION_COLUMN),
                     )
                 ),
             )
             .withColumn(
-                "relationship_type_hash",
+                Relationship.RELATIONSHIP_TYPE_HASH_COLUMN,
                 F.md5(
                     F.concat_ws(
-                        ":",
+                        ": ",
                         F.col(Relationship.RELATIONSHIP_TYPE_COLUMN),
                         F.col(Relationship.RELATIONSHIP_DESCRIPTION_COLUMN),
                     )
@@ -175,45 +186,55 @@ class Pipeline:
             ["uri", "content", "file_type"],
         )
 
-    async def associate_relationships(
+    async def process_and_store_relationships(
+        self,
         extracted_relationships_df: pd.DataFrame,
-        entities_df: pd.DataFrame,
-        rel_types_df: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """Associate relationships with their corresponding entities and relationship types."""
-        # Create a mapping from hash to entity and relationship type
-        entity_hash_map = {
-            generate_hash(entity.name, entity.description): entity
-            for entity in entities_df.to_dict(orient="records")
-        }
-        rel_type_hash_map = {
-            generate_hash(rel_type.name, rel_type.description): rel_type
-            for rel_type in rel_types_df.to_dict(orient="records")
-        }
+        embedding_provider,
+        entity_resolver: Resolver[Entity],
+        rel_type_resolver: Resolver[RelationshipType],
+        conn: asyncpg.Connection,
+    ) -> Tuple[pd.DataFrame, List[int]]:
+        """
+        Process extracted relationships, resolve entities and relationship types,
+        and store everything in the database.
 
-        # Associate relationships
-        for index, row in extracted_relationships_df.iterrows():
-            from_entity_hash = generate_hash(
-                row[Relationship.FROM_ENTITY_COLUMN],
-                row[Relationship.FROM_ENTITY_DESCRIPTION_COLUMN],
-            )
-            to_entity_hash = generate_hash(
-                row[Relationship.TO_ENTITY_COLUMN],
-                row[Relationship.TO_ENTITY_DESCRIPTION_COLUMN],
-            )
-            relationship_type_hash = generate_hash(
-                row[Relationship.RELATIONSHIP_TYPE_COLUMN],
-                row[Relationship.RELATIONSHIP_DESCRIPTION_COLUMN],
-            )
+        Args:
+            extracted_relationships_df: DataFrame containing extracted relationships
+            embedding_provider: Provider for computing embeddings
+            entity_resolver: Resolver for entities
+            rel_type_resolver: Resolver for relationship types
+            conn: asyncpg connection
 
-            # Find corresponding entities and relationship types
-            if from_entity_hash in entity_hash_map:
-                row[Relationship.FROM_ENTITY_COLUMN] = entity_hash_map[from_entity_hash]
-            if to_entity_hash in entity_hash_map:
-                row[Relationship.TO_ENTITY_COLUMN] = entity_hash_map[to_entity_hash]
-            if relationship_type_hash in rel_type_hash_map:
-                row[Relationship.RELATIONSHIP_TYPE_COLUMN] = rel_type_hash_map[
-                    relationship_type_hash
-                ]
+        Returns:
+            Tuple containing:
+            - DataFrame with relationships linked to database references
+            - List of database IDs for the saved relationships
+        """
+        # Process entities and get hash-to-reference mapping
+        _, entity_hash_to_reference = await create_extracted_entities_df(
+            extracted_relationships_df,
+            embedding_provider,
+            entity_resolver,
+        )
 
-        return extracted_relationships_df
+        # Process relationship types and get hash-to-reference mapping
+        _, rel_type_hash_to_reference = await create_extracted_rel_types_df(
+            extracted_relationships_df,
+            embedding_provider,
+            rel_type_resolver,
+        )
+
+        # Associate relationships with entity and relationship type references
+        relationships_with_refs = await link_relationships_with_references(
+            extracted_relationships_df,
+            entity_hash_to_reference,
+            rel_type_hash_to_reference,
+        )
+
+        # Save relationships to database
+        relationship_ids = await save_relationships_to_db(
+            relationships_with_refs,
+            conn,
+        )
+
+        return relationships_with_refs, relationship_ids

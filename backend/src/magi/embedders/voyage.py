@@ -8,7 +8,7 @@ from ..services.rate_limiter import DistributedRateLimiter, RateLimit
 class VoyageEmbeddingProvider(EmbeddingProvider):
     """Concrete implementation of EmbeddingProvider using Voyage AI's voyage-3-large."""
 
-    def __init__(self, api_key: str = VOYAGE_AI_CONFIG.api_key):
+    def __init__(self, api_key: str = VOYAGE_AI_CONFIG["api_key"]):
         self.client = voyageai.Client(api_key=api_key)
         self.rate_limiter = DistributedRateLimiter()
         self.model = "voyage-3-large"
@@ -46,9 +46,9 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
 
         input_type = None
         if query_prompt:
-            input_type = "query"
+            texts = [query_prompt + text for text in texts]
         elif embed_prompt:
-            input_type = "document"
+            texts = [embed_prompt + text for text in texts]
 
         # Rate limiting logic
         total_tokens = self.client.count_tokens(texts, model=self.model)
