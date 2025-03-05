@@ -1,20 +1,9 @@
-import asyncpg
-from ..config import POSTGRES_CONFIG
-
-
-async def create_tables(force_recreate=False):
+async def create_tables(conn, force_recreate=False):
     """Create necessary tables in PostgreSQL with pgvector extension for embedding storage and similarity search.
 
     Args:
         force_recreate: If True, drop and recreate all tables
     """
-    conn = await asyncpg.connect(
-        host=POSTGRES_CONFIG["host"],
-        port=POSTGRES_CONFIG["port"],
-        user=POSTGRES_CONFIG["user"],
-        password=POSTGRES_CONFIG["password"],
-        database=POSTGRES_CONFIG["database"],
-    )
 
     # Create pgvector extension if it doesn't exist
     await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
@@ -31,7 +20,7 @@ async def create_tables(force_recreate=False):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS entities (
             id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
             description TEXT,
             embedding vector(1024)
         );
@@ -41,7 +30,7 @@ async def create_tables(force_recreate=False):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS relationship_types (
             id SERIAL PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
             description TEXT,
             embedding vector(1024)
         );
@@ -100,6 +89,6 @@ async def create_tables(force_recreate=False):
     await conn.close()
 
 
-async def reset_database():
+async def reset_database(conn):
     """Drop and recreate all tables."""
-    await create_tables(force_recreate=True)
+    await create_tables(conn, force_recreate=True)

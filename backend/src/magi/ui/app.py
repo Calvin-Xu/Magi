@@ -1,5 +1,6 @@
 from typing import Tuple, Optional
 import gradio as gr
+import logging
 from pyspark.sql import SparkSession
 from pyspark.sql import DataFrame
 import asyncpg
@@ -11,16 +12,26 @@ from ..services.checks import run_health_checks
 from ..services.s3 import list_s3_objects
 from ..services.aws import AWSCredentials
 from ..services.pipeline import Pipeline
+from ..utils import get_logger, set_global_log_level, disable_logging
 
+# Create a logger for this module
+logger = get_logger(__name__)
 
 # Constants for display
 MAX_ROWS_DISPLAY = 500  # Number of rows to show in UI
+
+# Default log level
+DEFAULT_LOG_LEVEL = logging.INFO
 
 
 def create_gradio_app() -> gr.Blocks:
     """Create and return the Gradio interface."""
     # Initialize Spark
     spark = SparkSession.builder.appName("magi").master("local[*]").getOrCreate()
+
+    # Configure logging
+    set_global_log_level(DEFAULT_LOG_LEVEL)
+    logger.info("Starting Magi UI application")
 
     with gr.Blocks(title="Magi System Status", theme=gr.themes.Base()) as ui:
         # Service Status Section
@@ -29,6 +40,24 @@ def create_gradio_app() -> gr.Blocks:
         with gr.Accordion("Service Details", open=False):
             status_md = gr.Markdown("Checking services...")
             refresh_btn = gr.Button("Refresh Status", variant="primary", size="sm")
+
+        # Logging Configuration Section
+        gr.Markdown("## Logging Configuration")
+        with gr.Row():
+            log_level = gr.Dropdown(
+                label="Log Level",
+                choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+                value="INFO",
+            )
+            logging_enabled = gr.Checkbox(
+                label="Enable Logging",
+                value=True,
+            )
+
+        with gr.Row():
+            apply_log_settings_btn = gr.Button(
+                "Apply Log Settings", variant="primary", size="sm"
+            )
 
         # S3 Browser Section
         gr.Markdown("## S3 Data Source")
@@ -95,6 +124,7 @@ def create_gradio_app() -> gr.Blocks:
                 password=POSTGRES_CONFIG["password"],
                 database=POSTGRES_CONFIG["database"],
             )
+
             entities = await conn.fetch("SELECT * FROM entities;")
             relationship_types = await conn.fetch("SELECT * FROM relationship_types;")
             relationships = await conn.fetch("SELECT * FROM relationships;")
@@ -126,6 +156,15 @@ def create_gradio_app() -> gr.Blocks:
             secret: Optional[str],
         ) -> DataFrame:
             """Process text files and extract relationships."""
+
+            conn = await asyncpg.connect(
+                host=POSTGRES_CONFIG["host"],
+                port=POSTGRES_CONFIG["port"],
+                user=POSTGRES_CONFIG["user"],
+                password=POSTGRES_CONFIG["password"],
+                database=POSTGRES_CONFIG["database"],
+            )
+
             if not uri:
                 return "Please enter an S3 URI"
 
@@ -133,7 +172,7 @@ def create_gradio_app() -> gr.Blocks:
                 credentials = (
                     AWSCredentials(key_id, secret) if key_id or secret else None
                 )
-                pipeline = Pipeline(spark, credentials=credentials)
+                pipeline = Pipeline(spark, conn, credentials=credentials)
 
                 total_documents = 0
                 first_df = None
@@ -185,6 +224,14 @@ def create_gradio_app() -> gr.Blocks:
         async def wipe_data():
             return await wipe_all_data()
 
+        async def apply_log_settings(log_level: str, logging_enabled: bool):
+            if logging_enabled:
+                set_global_log_level(log_level)
+                logger.info(f"Logging level set to {log_level}")
+            else:
+                disable_logging()
+                logger.info("Logging disabled")
+
         browse_btn.click(
             fn=browse_s3,
             inputs=[s3_uri, aws_key_id, aws_secret],
@@ -200,6 +247,12 @@ def create_gradio_app() -> gr.Blocks:
         wipe_btn.click(
             fn=wipe_data,
             outputs=[wipe_output],
+        )
+
+        apply_log_settings_btn.click(
+            fn=apply_log_settings,
+            inputs=[log_level, logging_enabled],
+            outputs=[],
         )
 
         # Create DataFrame components for displaying tables

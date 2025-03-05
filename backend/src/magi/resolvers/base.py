@@ -5,17 +5,25 @@ against existing database entries using embedding similarity and LLM verificatio
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any, TypeVar, Generic
+from typing import Any, Dict, Generic, List, TypeVar
+
 import asyncpg
 import numpy as np
+
+from magi.resolvers.models import ObjectWithEmbedding
+from ..utils import get_logger, log_async_function_call
+
 from ..embedders.base import EmbeddingProvider
 from .models import (
-    ObjectWithEmbedding,
     SimilarObject,
     ObjectPair,
     VerificationResult,
     ProcessedObject,
 )
+
+
+# Create a logger for this module
+logger = get_logger(__name__)
 
 # Generic type for the object (entity or relationship type)
 T = TypeVar("T")
@@ -63,6 +71,7 @@ class Resolver(Generic[T], ABC):
         self.similarity_threshold = similarity_threshold
         self.max_tokens_per_batch = max_tokens_per_batch
 
+    @log_async_function_call()
     async def resolve(self, objects: List[T]) -> List[T]:
         """
         Resolve a list of objects against existing database entries.
@@ -81,38 +90,62 @@ class Resolver(Generic[T], ABC):
             List of resolved objects with database references and updated fields
         """
         if not objects:
+            logger.info("No objects to resolve, returning empty list")
             return []
 
-        # Convert objects to dictionaries
-        object_models = [self._object_to_model(obj) for obj in objects]
+        try:
+            logger.info(f"Resolving {len(objects)} objects")
 
-        # Compute embeddings
-        object_models_with_embeddings = await self._compute_embeddings(object_models)
+            # Convert objects to dictionaries
+            object_models = [self._object_to_model(obj) for obj in objects]
+            logger.debug(f"Converted {len(object_models)} objects to models")
 
-        # Find similar objects
-        object_pairs = await self._find_similar_objects(object_models_with_embeddings)
+            # Compute embeddings
+            object_models_with_embeddings = await self._compute_embeddings(
+                object_models
+            )
+            logger.debug(
+                f"Computed embeddings for {len(object_models_with_embeddings)} objects"
+            )
 
-        # Create batches for LLM verification
-        batches = await self._create_verification_batches(object_pairs)
+            # Find similar objects
+            object_pairs = await self._find_similar_objects(
+                object_models_with_embeddings
+            )
+            logger.debug(f"Found {len(object_pairs)} object pairs")
 
-        # Verify each batch
-        verification_results = []
-        for batch in batches:
-            batch_results = await self._verify_objects_batch(batch)
-            verification_results.extend(batch_results)
+            # Create batches for LLM verification
+            batches = await self._create_verification_batches(object_pairs)
+            logger.debug(f"Created {len(batches)} verification batches")
 
-        # Process verification results
-        processed_objects = await self._process_verification_results(
-            object_models_with_embeddings, verification_results
-        )
+            # Verify each batch
+            verification_results = []
+            for i, batch in enumerate(batches):
+                logger.debug(
+                    f"Verifying batch {i + 1}/{len(batches)} with {len(batch)} pairs"
+                )
+                batch_results = await self._verify_objects_batch(batch)
+                verification_results.extend(batch_results)
+            logger.debug(f"Verified {len(verification_results)} object pairs")
 
-        # Convert back to original objects
-        resolved_objects = [
-            self._model_to_object(processed.resolved, objects[i])
-            for i, processed in enumerate(processed_objects)
-        ]
+            # Process verification results
+            processed_objects = await self._process_verification_results(
+                object_models_with_embeddings, verification_results
+            )
+            logger.debug(f"Processed {len(processed_objects)} verification results")
 
-        return resolved_objects
+            # Convert back to original objects
+            resolved_objects = [
+                self._model_to_object(processed.resolved, objects[i])
+                for i, processed in enumerate(processed_objects)
+            ]
+            logger.info(f"Successfully resolved {len(resolved_objects)} objects")
+
+            return resolved_objects
+        except Exception as e:
+            logger.exception(f"Error in Resolver.resolve: {str(e)}")
+            # Return the original objects if there's an error
+            return objects
 
     def _object_to_model(self, obj: T) -> ObjectWithEmbedding:
         """
