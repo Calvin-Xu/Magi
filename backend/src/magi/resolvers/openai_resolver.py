@@ -211,7 +211,9 @@ class OpenAIResolver(Resolver[T]):
                     try:
                         if retry_after:
                             # In case we are told to wait until a specific time:
-                            wait_seconds = max(0.0, retry_after - datetime.now())
+                            wait_seconds = max(
+                                0.0, retry_after - datetime.now().timestamp()
+                            )
                             # if attempt == 0:
                             #     # Add a small random initial jitter
                             #     wait_seconds += random.random() * 5

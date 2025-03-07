@@ -98,7 +98,9 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
                     ) as retry_after:
                         if retry_after:
                             # If rate limited, wait and then try again
-                            wait_seconds = max(0.0, retry_after - datetime.now())
+                            wait_seconds = max(
+                                0.0, retry_after - datetime.now().timestamp()
+                            )
                             await asyncio.sleep(wait_seconds)
                             # Recursive call after waiting
                             return await embed_chunk(chunk)
@@ -135,7 +137,7 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
             ) as retry_after:
                 if retry_after:
                     # If rate limited, wait and then try again
-                    wait_seconds = max(0.0, retry_after - datetime.now())
+                    wait_seconds = max(0.0, retry_after - datetime.now().timestamp())
                     await asyncio.sleep(wait_seconds)
                     # Recursive call after waiting
                     return await self.embed(
