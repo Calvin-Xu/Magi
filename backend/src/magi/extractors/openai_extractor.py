@@ -40,13 +40,13 @@ MODEL_LIMITS: Dict[str, ModelLimits] = {
     "o3-mini-2025-01-31": ModelLimits(
         rpm=10_000,
         tpm=10_000_000,
-        input_token_limit=8192,
+        input_token_limit=200_000 / 2,
         max_concurrent=10,
     ),
     "gpt-4o-2024-11-20": ModelLimits(
         rpm=10_000,
         tpm=2_000_000,
-        input_token_limit=8192,
+        input_token_limit=128000 / 2,
         max_concurrent=10,
     ),
 }
