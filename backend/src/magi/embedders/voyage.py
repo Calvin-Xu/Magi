@@ -1,10 +1,11 @@
-from typing import List, Optional
 import asyncio
+from typing import List, Optional
 
 import voyageai
 
 from magi.config import VOYAGE_AI_CONFIG
-from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.services.rate_limiter import RateLimit, rate_limiter
+
 from .base import EmbeddingProvider
 
 
@@ -17,7 +18,7 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
         max_concurrent_requests: int = 40,
     ):
         self.client = voyageai.Client(api_key=api_key)
-        self.rate_limiter = DistributedRateLimiter()
+        self.rate_limiter = rate_limiter
         self.model = "voyage-3-large"
         self.rate_limit = RateLimit(
             name="voyage_3_large_embedding",
@@ -89,18 +90,28 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
             async def embed_chunk(chunk):
                 async with semaphore:
                     tokens = self.client.count_tokens(chunk, model=self.model)
-                    await self.rate_limiter.acquire(self.rate_limit, tokens=tokens)
-
-                    # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
-                    result = await asyncio.to_thread(
-                        self.client.embed,
-                        chunk,
-                        model=self.model,
-                        input_type=input_type,
-                        truncation=truncation,
-                        output_dimension=output_dimension,
-                    )
-                    return result.embeddings
+                    
+                    # Use context manager for rate limiting
+                    async with self.rate_limiter.acquire_context(
+                        self.rate_limit, tokens=tokens
+                    ) as retry_after:
+                        if retry_after:
+                            # If rate limited, wait and then try again
+                            wait_seconds = max(0.0, retry_after - asyncio.get_event_loop().time())
+                            await asyncio.sleep(wait_seconds)
+                            # Recursive call after waiting
+                            return await embed_chunk(chunk)
+                        
+                        # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
+                        result = await asyncio.to_thread(
+                            self.client.embed,
+                            chunk,
+                            model=self.model,
+                            input_type=input_type,
+                            truncation=truncation,
+                            output_dimension=output_dimension,
+                        )
+                        return result.embeddings
 
             # Create tasks for all chunks
             embedding_tasks = [embed_chunk(chunk) for chunk in chunked_texts]
@@ -118,15 +129,29 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
             return all_embeddings
         else:
             # If within limits, proceed with a single request
-            await self.rate_limiter.acquire(self.rate_limit, tokens=total_tokens)
-
-            # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
-            result = await asyncio.to_thread(
-                self.client.embed,
-                texts,
-                model=self.model,
-                input_type=input_type,
-                truncation=truncation,
-                output_dimension=output_dimension,
-            )
-            return result.embeddings
+            async with self.rate_limiter.acquire_context(
+                self.rate_limit, tokens=total_tokens
+            ) as retry_after:
+                if retry_after:
+                    # If rate limited, wait and then try again
+                    wait_seconds = max(0.0, retry_after - asyncio.get_event_loop().time())
+                    await asyncio.sleep(wait_seconds)
+                    # Recursive call after waiting
+                    return await self.embed(
+                        texts, 
+                        truncation=truncation,
+                        output_dimension=output_dimension,
+                        query_prompt=query_prompt,
+                        embed_prompt=embed_prompt
+                    )
+                
+                # Use asyncio.to_thread to run the synchronous client.embed in a separate thread
+                result = await asyncio.to_thread(
+                    self.client.embed,
+                    texts,
+                    model=self.model,
+                    input_type=input_type,
+                    truncation=truncation,
+                    output_dimension=output_dimension,
+                )
+                return result.embeddings

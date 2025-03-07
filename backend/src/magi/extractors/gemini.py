@@ -11,8 +11,9 @@ from pydantic import BaseModel
 from vertexai.preview import tokenization
 
 from magi.config import GEMINI_CONFIG
-from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.services.rate_limiter import RateLimit, rate_limiter
 from magi.utils.logging import get_logger
+
 from .base import (
     ExtractionMetrics,
     RelationshipExtractor,
@@ -79,6 +80,9 @@ class GeminiError(Exception):
 class GeminiExtractor(RelationshipExtractor):
     """Relationship extractor using Google's Gemini models."""
 
+    # Class-level tokenizer cache
+    _tokenizer_cache = {}
+
     def __init__(
         self,
         model: str,
@@ -98,7 +102,7 @@ class GeminiExtractor(RelationshipExtractor):
 
         # Initialize client and rate limiter
         self.client = genai.Client(api_key=GEMINI_CONFIG.api_key)
-        self._rate_limiter = DistributedRateLimiter()
+        self._rate_limiter = rate_limiter
         self._model_limits = limits
         self.max_retries = max_retries
 
@@ -107,11 +111,16 @@ class GeminiExtractor(RelationshipExtractor):
             f"Model limits: RPM={limits.rpm}, TPM={limits.tpm}, Max input tokens={limits.input_token_limit}"
         )
 
-        # Initialize tokenizer using Vertex AI model ID
-        self._tokenizer = tokenization.get_tokenizer_for_model(
-            self._model_limits.vertex_model_id
-        )
-        logger.debug(f"Using tokenizer for model: {self._model_limits.vertex_model_id}")
+        # Initialize tokenizer using Vertex AI model ID - use class-level cache
+        vertex_model_id = self._model_limits.vertex_model_id
+        if vertex_model_id not in GeminiExtractor._tokenizer_cache:
+            GeminiExtractor._tokenizer_cache[vertex_model_id] = (
+                tokenization.get_tokenizer_for_model(vertex_model_id)
+            )
+            logger.debug(f"Created cached tokenizer for model: {vertex_model_id}")
+
+        self._tokenizer = GeminiExtractor._tokenizer_cache[vertex_model_id]
+        logger.debug(f"Using tokenizer for model: {vertex_model_id}")
 
         # Gemini-specific limits
         self._rate_limit = RateLimit(
@@ -120,7 +129,7 @@ class GeminiExtractor(RelationshipExtractor):
             tpm=self._model_limits.tpm,
             window_size=60,
             num_shards=10,
-            max_concurrent=4,
+            max_concurrent=16,
         )
         logger.debug(f"Rate limit configured: {self._rate_limit}")
 
@@ -150,39 +159,41 @@ class GeminiExtractor(RelationshipExtractor):
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                # Get rate limit approval
-                retry_after = await self._rate_limiter.acquire(
+                # Use the context manager for rate limiting
+                async with self._rate_limiter.acquire_context(
                     rate_limit=self._rate_limit,
                     tokens=token_count,
                     reserve=True,
-                )
+                ) as retry_after:
+                    if retry_after:
+                        # In case we are told to wait until a specific time:
+                        wait_seconds = max(
+                            0.0, retry_after - asyncio.get_event_loop().time()
+                        )
+                        # if attempt == 0:
+                        #     # Add a small random initial jitter
+                        #     wait_seconds += random.random() * 5
+                        logger.debug(
+                            f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                        )
+                        await asyncio.sleep(wait_seconds)
+                        continue  # Try again after waiting
 
-                if retry_after:
-                    # In case we are told to wait until a specific time:
-                    wait_seconds = max(0.0, retry_after - datetime.now().time())
-                    if attempt == 0:
-                        # Add a small random initial jitter
-                        wait_seconds += random.random() * 5
-                    logger.debug(
-                        f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                    logger.info(
+                        f"Making Gemini API call (attempt {attempt + 1}/{self.max_retries})"
                     )
-                    await asyncio.sleep(wait_seconds)
-
-                logger.info(
-                    f"Making Gemini API call (attempt {attempt + 1}/{self.max_retries})"
-                )
-                # Make the API call
-                response = await asyncio.to_thread(
-                    self.client.models.generate_content,
-                    model=self.model,
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": RelationshipList,
-                    },
-                )
-                logger.debug(f"Received response: {response.text}")
-                return response
+                    # Make the API call
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=self.model,
+                        contents=prompt,
+                        config={
+                            "response_mime_type": "application/json",
+                            "response_schema": RelationshipList,
+                        },
+                    )
+                    logger.debug(f"Received response: {response.text}")
+                    return response
 
             except Exception as e:
                 last_error = e

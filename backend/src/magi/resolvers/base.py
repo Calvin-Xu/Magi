@@ -7,19 +7,18 @@ against existing database entries using embedding similarity and LLM verificatio
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generic, List, TypeVar, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 import asyncpg
 import numpy as np
 
+from magi.embedders.base import EmbeddingProvider
 from magi.resolvers.models import (
     ObjectPair,
     ObjectWithEmbedding,
     ProcessedObject,
     VerificationResult,
 )
-
-from magi.embedders.base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 

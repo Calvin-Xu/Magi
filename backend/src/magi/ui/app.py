@@ -12,8 +12,8 @@ from magi.services.aws import AWSCredentials
 from magi.services.checks import run_health_checks
 from magi.services.pipeline import Pipeline
 from magi.services.s3 import list_s3_objects
-from magi.utils import disable_logging, get_logger, set_global_log_level
 from magi.ui.formatters import all_services_ok, format_status_markdown
+from magi.utils import disable_logging, get_logger, set_global_log_level
 
 # Create a logger for this module
 logger = get_logger(__name__)
@@ -292,6 +292,7 @@ def create_gradio_app() -> gr.Blocks:
             await conn.close()
 
             from gqlalchemy import Memgraph
+
             from magi.config import MEMGRAPH_CONFIG
 
             mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)

@@ -7,19 +7,20 @@ import asyncio
 import random
 from typing import Dict, List, Set, TypeVar
 
+import tiktoken
+from openai import OpenAI
+
 from magi.config import OPENAI_CONFIG
 from magi.services.models import Entity, RelationshipType
-from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.services.rate_limiter import RateLimit, rate_limiter
 from magi.utils import get_logger
-from openai import OpenAI
-import tiktoken
 
 from .base import Resolver
 from .models import (
     LLMVerificationResponse,
     ObjectPair,
-    VerificationResult as ModelVerificationResult,
 )
+from .models import VerificationResult as ModelVerificationResult
 
 logger = get_logger(__name__)
 T = TypeVar("T", Entity, RelationshipType)
@@ -83,7 +84,8 @@ class OpenAIResolver(Resolver[T]):
         self.reserved_tokens = 500
 
         # Initialize rate limiter
-        self._rate_limiter = DistributedRateLimiter()
+        self._rate_limiter = rate_limiter
+
         # TODO: make rate limits configurable
         self._rate_limit = RateLimit(  # Tier 4
             name="gpt-4o",
@@ -194,69 +196,71 @@ class OpenAIResolver(Resolver[T]):
             )
 
         try:
-            # Apply rate limiting before making the API call
-            retry_after = await self._rate_limiter.acquire(
+            # Apply rate limiting using context manager
+            async with self._rate_limiter.acquire_context(
                 rate_limit=self._rate_limit,
                 tokens=token_count
                 + self.reserved_tokens,  # Include reserved tokens in the count
                 reserve=True,
-            )
+            ) as retry_after:
+                # Implement retry logic for API calls
+                response = None
+                last_exception = None
 
-            # Implement retry logic for API calls
-            response = None
-            last_exception = None
+                for attempt in range(self.max_retries):
+                    try:
+                        if retry_after:
+                            # In case we are told to wait until a specific time:
+                            wait_seconds = max(
+                                0.0, retry_after - asyncio.get_event_loop().time()
+                            )
+                            # if attempt == 0:
+                            #     # Add a small random initial jitter
+                            #     wait_seconds += random.random() * 5
+                            logger.debug(
+                                f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                            )
+                            await asyncio.sleep(wait_seconds)
+                            # After waiting, try to acquire the rate limit again
+                            return await self._verify_objects_batch(batch)
 
-            for attempt in range(self.max_retries):
-                try:
-                    if retry_after:
-                        # In case we are told to wait until a specific time:
-                        wait_seconds = max(
-                            0.0, retry_after - asyncio.get_event_loop().time()
+                        if attempt > 0:
+                            logger.info(
+                                f"Retry attempt {attempt}/{self.max_retries} for OpenAI API call"
+                            )
+                            # Exponential backoff: wait 2^retry_count seconds before retrying
+                            await asyncio.sleep(2**attempt)
+
+                        # Call the OpenAI API with structured output
+                        response = await asyncio.to_thread(
+                            self.client.beta.chat.completions.parse,
+                            model=self.model,
+                            temperature=self.temperature,
+                            response_format=LLMVerificationResponse,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "You are a helpful assistant that analyzes objects to determine if they are the same entity or concept.",
+                                },
+                                {"role": "user", "content": prompt},
+                            ],
                         )
-                        if attempt == 0:
-                            # Add a small random initial jitter
-                            wait_seconds += random.random() * 5
-                        logger.debug(
-                            f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+
+                        # If we got here, the API call was successful
+                        break
+
+                    except Exception as e:
+                        last_exception = e
+                        logger.warning(
+                            f"OpenAI API call failed (attempt {attempt}/{self.max_retries}): {str(e)}"
                         )
-                        await asyncio.sleep(wait_seconds)
-                    if attempt > 0:
-                        logger.info(
-                            f"Retry attempt {attempt}/{self.max_retries} for OpenAI API call"
-                        )
-                        # Exponential backoff: wait 2^retry_count seconds before retrying
-                        await asyncio.sleep(2**attempt)
 
-                    # Call the OpenAI API with structured output
-                    response = await asyncio.to_thread(
-                        self.client.beta.chat.completions.parse,
-                        model=self.model,
-                        temperature=self.temperature,
-                        response_format=LLMVerificationResponse,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "You are a helpful assistant that analyzes objects to determine if they are the same entity or concept.",
-                            },
-                            {"role": "user", "content": prompt},
-                        ],
-                    )
-
-                    # If we got here, the API call was successful
-                    break
-
-                except Exception as e:
-                    last_exception = e
-                    logger.warning(
-                        f"OpenAI API call failed (attempt {attempt}/{self.max_retries}): {str(e)}"
-                    )
-
-            # If we didn't get a response after all retries, raise the last exception
-            if response is None:
-                if last_exception:
-                    raise last_exception
-                else:
-                    raise RuntimeError("Failed to get response from OpenAI API")
+                # If we didn't get a response after all retries, raise the last exception
+                if response is None:
+                    if last_exception:
+                        raise last_exception
+                    else:
+                        raise RuntimeError("Failed to get response from OpenAI API")
 
             # Process the results
             verification_results = response.choices[0].message.parsed

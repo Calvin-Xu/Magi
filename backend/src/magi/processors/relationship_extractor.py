@@ -1,17 +1,11 @@
 """Processor for extracting relationships from documents."""
 
 import asyncio
-from dataclasses import dataclass
 import json
-import os
+from dataclasses import dataclass
 from typing import Optional, Type
+import os
 
-from magi.extractors.base import RelationshipExtractor
-from magi.extractors.gemini import GeminiExtractor
-from magi.extractors.openai import OpenAIExtractor
-from magi.services.models import Relationship
-from magi.services.schemas import RELATIONSHIP_SCHEMA
-from magi.utils.logging import get_logger
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -19,6 +13,13 @@ from pyspark.sql.types import (
     StringType,
 )
 from pyspark.storagelevel import StorageLevel
+
+from magi.extractors.base import RelationshipExtractor
+from magi.extractors.gemini import GeminiExtractor
+from magi.extractors.openai import OpenAIExtractor
+from magi.services.models import Relationship
+from magi.services.schemas import RELATIONSHIP_SCHEMA
+from magi.utils.logging import get_logger
 
 from .base import DocumentProcessor
 
@@ -29,6 +30,7 @@ logger = get_logger(__name__)
 AVAILABLE_MODELS = {
     # OpenAI models
     "o3-mini-2025-01-31": OpenAIExtractor,
+    "gpt-4o-2024-11-20": OpenAIExtractor,
     # Gemini models
     "gemini-2.0-flash": GeminiExtractor,
     # 2.0 thinking has no json mode
@@ -44,6 +46,7 @@ class RelationshipExtractorProcessor(DocumentProcessor):
     """Processes documents to extract relationships using an LLM."""
 
     model: str = DEFAULT_MODEL
+    _extractor_cache = None  # Instance-level cache for the extractor
 
     async def extract_relationships_from_text(
         self,
@@ -65,12 +68,19 @@ class RelationshipExtractorProcessor(DocumentProcessor):
             return AVAILABLE_MODELS[DEFAULT_MODEL]
         return AVAILABLE_MODELS[self.model]
 
-    # Cache extractor per process
+    def _get_extractor(self) -> RelationshipExtractor:
+        """Get or create a cached extractor instance."""
+        if self._extractor_cache is None:
+            extractor_class = self.get_extractor_class()
+            logger.info(
+                f"Creating cached {extractor_class.__name__} for model {self.model}"
+            )
+            self._extractor_cache = extractor_class(model=self.model)
+        return self._extractor_cache
+
     def get_extractor(self) -> RelationshipExtractor:
         """Get or create an extractor instance."""
-        extractor_class = self.get_extractor_class()
-        logger.info(f"Creating {extractor_class.__name__} for model {self.model}")
-        return extractor_class(model=self.model)
+        return self._get_extractor()
 
     def create_udf(self) -> F.UserDefinedFunction:
         """Create a Spark UDF for relationship extraction."""
@@ -117,7 +127,7 @@ class RelationshipExtractorProcessor(DocumentProcessor):
         extract_rels_udf = self.create_udf()
 
         # https://community.databricks.com/t5/data-engineering/accelerating-row-wise-python-udf-functions-without-using-pandas/td-p/15328
-        df = df.repartition(os.cpu_count())
+        df = df.repartition(os.cpu_count() * 4)
         # Extract relationships and cache BEFORE any transformations
         # (to avoid UDFs being run multiple times)
         df_with_json = df.withColumn(

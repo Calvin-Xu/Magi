@@ -1,13 +1,13 @@
 """Processor for entity and relationship resolution."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
 import asyncpg
-from pyspark.sql import DataFrame, functions as F
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-
-import asyncio
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from magi.embedders.base import EmbeddingProvider
 from magi.resolvers.base import Resolver
@@ -56,6 +56,7 @@ class ObjectResolutionProcessor:
 
         # Setup parallel connections for resolution
         import asyncpg
+
         from magi.config import POSTGRES_CONFIG
 
         entity_conn = await asyncpg.connect(
@@ -456,6 +457,7 @@ class ObjectResolutionProcessor:
             A list of inserted relationship IDs from PostgreSQL.
         """
         from gqlalchemy import Memgraph
+
         from magi.config import MEMGRAPH_CONFIG
 
         row_count = relationships_df.count()

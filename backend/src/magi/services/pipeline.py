@@ -10,6 +10,7 @@ from magi.embedders.voyage import VoyageEmbeddingProvider
 from magi.processors import ObjectResolutionProcessor, RelationshipExtractorProcessor
 from magi.resolvers import OpenAIResolver, Resolver
 from magi.utils import get_logger, set_global_log_level
+
 from .aws import AWSCredentials, create_aws_client
 from .models import Entity, RelationshipType
 from .s3 import DocumentBatch, S3DocumentReader
