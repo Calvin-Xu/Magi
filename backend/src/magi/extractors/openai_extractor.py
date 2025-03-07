@@ -1,26 +1,25 @@
 """OpenAI-based relationship extractor."""
 
 import asyncio
-import random
-import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict
+from typing import Dict, List
 
 import openai
 import tiktoken
 from openai import OpenAI
 from pydantic import BaseModel
 
-from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.config import OPENAI_CONFIG
+from magi.services.rate_limiter import RateLimit, rate_limiter
 from magi.utils.logging import get_logger, log_async_function_call
+
 from .base import (
+    ExtractionMetrics,
     RelationshipExtractor,
     RelationshipTriple,
-    ExtractionMetrics,
 )
 from .prompts import RELATIONSHIP_EXTRACTION_PROMPT
-from magi.config import OPENAI_CONFIG
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -41,6 +40,12 @@ MODEL_LIMITS: Dict[str, ModelLimits] = {
     "o3-mini-2025-01-31": ModelLimits(
         rpm=10_000,
         tpm=10_000_000,
+        input_token_limit=8192,
+        max_concurrent=10,
+    ),
+    "gpt-4o-2024-11-20": ModelLimits(
+        rpm=10_000,
+        tpm=2_000_000,
         input_token_limit=8192,
         max_concurrent=10,
     ),
@@ -78,6 +83,9 @@ class OpenAIError(Exception):
 class OpenAIExtractor(RelationshipExtractor):
     """Relationship extractor using OpenAI's ChatCompletion API and JSON Schema."""
 
+    # Class-level tokenizer cache
+    _tokenizer_cache = {}
+
     def __init__(
         self,
         model: str,
@@ -113,7 +121,7 @@ class OpenAIExtractor(RelationshipExtractor):
         self._client = OpenAI(api_key=openai_api_key)
 
         # A simple distributed rate limiter from your codebase
-        self._rate_limiter = DistributedRateLimiter()
+        self._rate_limiter = rate_limiter
         self._rate_limit = RateLimit(
             name=model,
             rpm=limits.rpm,
@@ -125,16 +133,22 @@ class OpenAIExtractor(RelationshipExtractor):
 
         self.max_retries = max_retries
 
-        # Prepare tiktoken for counting
-        # If tiktoken doesn't have an encoding for the model, fall back to a known one:
-        try:
-            self._tokenizer = tiktoken.encoding_for_model(model)
-            logger.info(f"Using tokenizer for model: {model}")
-        except KeyError:
-            logger.warning(
-                f"No tokenizer found for {model}, falling back to cl100k_base"
-            )
-            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+        # Prepare tiktoken for counting - use class-level cache
+        if model not in OpenAIExtractor._tokenizer_cache:
+            try:
+                OpenAIExtractor._tokenizer_cache[model] = tiktoken.encoding_for_model(
+                    model
+                )
+                logger.info(f"Using cached tokenizer for model: {model}")
+            except KeyError:
+                logger.warning(
+                    f"No tokenizer found for {model}, falling back to cl100k_base"
+                )
+                OpenAIExtractor._tokenizer_cache[model] = tiktoken.get_encoding(
+                    "cl100k_base"
+                )
+
+        self._tokenizer = OpenAIExtractor._tokenizer_cache[model]
 
         logger.info(
             f"Initialized OpenAIExtractor with model: {model}, max_concurrent: {max_concurrent_requests}"
@@ -278,46 +292,49 @@ class OpenAIExtractor(RelationshipExtractor):
 
         for attempt in range(self.max_retries):
             try:
-                # Acquire rate-limit permission
+                # Use the context manager for rate limiting
                 logger.debug(
                     f"Acquiring rate limit for {tokens_needed} tokens (attempt {attempt + 1})"
                 )
-                retry_after = await self._rate_limiter.acquire(
+                async with self._rate_limiter.acquire_context(
                     rate_limit=self._rate_limit,
                     tokens=tokens_needed,
                     reserve=True,
-                )
-                if retry_after:
-                    # In case we are told to wait until a specific time:
-                    wait_seconds = max(0.0, retry_after - time.time())
-                    if attempt == 0:
-                        # Add a small random initial jitter
-                        wait_seconds += random.random() * 5
-                    logger.debug(
-                        f"Rate limited, waiting for {wait_seconds:.2f} seconds"
-                    )
-                    await asyncio.sleep(wait_seconds)
+                ) as retry_after:
+                    if retry_after:
+                        # In case we are told to wait until a specific time:
+                        wait_seconds = max(0.0, retry_after - datetime.now())
+                        # if attempt == 0:
+                        #     # Add a small random initial jitter
+                        #     wait_seconds += random.random() * 5
+                        logger.debug(
+                            f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                        )
+                        await asyncio.sleep(wait_seconds)
+                        continue  # Try again after waiting
 
-                # Use the new structured output parse API
-                logger.debug(f"Sending request to OpenAI API (attempt {attempt + 1})")
-                completion = self._client.beta.chat.completions.parse(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a relationship extraction assistant.",
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt,
-                        },
-                    ],
-                    response_format=RelationshipList,
-                )
-                logger.debug(
-                    f"Successfully received response from OpenAI API (attempt {attempt + 1})"
-                )
-                return completion
+                    # Use the new structured output parse API
+                    logger.debug(
+                        f"Sending request to OpenAI API (attempt {attempt + 1})"
+                    )
+                    completion = self._client.beta.chat.completions.parse(
+                        model=self.model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a relationship extraction assistant.",
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt,
+                            },
+                        ],
+                        response_format=RelationshipList,
+                    )
+                    logger.debug(
+                        f"Successfully received response from OpenAI API (attempt {attempt + 1})"
+                    )
+                    return completion
 
             except Exception as e:
                 last_error = e

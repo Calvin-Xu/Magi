@@ -1,13 +1,13 @@
 """Processor for entity and relationship resolution."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Union
 
 import asyncpg
-from pyspark.sql import DataFrame, functions as F
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
-
-import asyncio
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from magi.embedders.base import EmbeddingProvider
 from magi.resolvers.base import Resolver
@@ -56,6 +56,7 @@ class ObjectResolutionProcessor:
 
         # Setup parallel connections for resolution
         import asyncpg
+
         from magi.config import POSTGRES_CONFIG
 
         entity_conn = await asyncpg.connect(
@@ -246,11 +247,28 @@ class ObjectResolutionProcessor:
         resolved_hash_to_entity = await resolver.resolve(hash_to_entity)
         logger.info(f"Resolved {len(resolved_hash_to_entity)} entities via resolver")
 
+        # Debug: Check which entities have postgres_reference set
+        entities_with_refs = sum(
+            1
+            for e in resolved_hash_to_entity.values()
+            if e.postgres_reference is not None
+        )
+        entities_without_refs = sum(
+            1 for e in resolved_hash_to_entity.values() if e.postgres_reference is None
+        )
+        logger.info(
+            f"Entity resolution results: {entities_with_refs} with references, {entities_without_refs} without references"
+        )
+
         # Build a final {hash -> reference}
         hash_to_reference = {}
         for h, e_obj in resolved_hash_to_entity.items():
             if e_obj.postgres_reference:
                 hash_to_reference[h] = e_obj.postgres_reference
+            else:
+                logger.warning(
+                    f"Entity missing postgres_reference after resolution: hash={h}, name={e_obj.name}"
+                )
 
         logger.debug(
             f"Created hash->reference with {len(hash_to_reference)} resolved references"
@@ -456,6 +474,7 @@ class ObjectResolutionProcessor:
             A list of inserted relationship IDs from PostgreSQL.
         """
         from gqlalchemy import Memgraph
+
         from magi.config import MEMGRAPH_CONFIG
 
         row_count = relationships_df.count()

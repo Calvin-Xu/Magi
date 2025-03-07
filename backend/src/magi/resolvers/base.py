@@ -7,19 +7,18 @@ against existing database entries using embedding similarity and LLM verificatio
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Generic, List, TypeVar, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 import asyncpg
 import numpy as np
 
+from magi.embedders.base import EmbeddingProvider
 from magi.resolvers.models import (
     ObjectPair,
     ObjectWithEmbedding,
     ProcessedObject,
     VerificationResult,
 )
-
-from magi.embedders.base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +206,7 @@ class Resolver(Generic[T], ABC):
         prompt += """
                 Use the following criteria to determine if two objects are the same:
                 - Do they refer to the same real-world entity, concept, or relationship?
-                - Are they synonyms or different ways of expressing the same idea?
+                - Are they aliases, nicknames, synonyms or different ways of expressing the same idea?
                 - Would merging them provide a more complete understanding without introducing contradictions?
 
                 For each pair, provide:

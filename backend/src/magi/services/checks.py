@@ -6,6 +6,7 @@ from gqlalchemy import Memgraph
 from pyspark.sql import SparkSession
 
 from magi.config import MEMGRAPH_CONFIG, MEMGRAPH_LAB_CONFIG, POSTGRES_CONFIG
+
 from .status import ServiceState, service_status
 
 

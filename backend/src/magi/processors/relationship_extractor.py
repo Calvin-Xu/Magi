@@ -3,15 +3,16 @@
 import asyncio
 from dataclasses import dataclass
 
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType
+from pyspark.storagelevel import StorageLevel
+
 from magi.extractors.gemini_extractor import GeminiExtractor
 from magi.extractors.openai_extractor import OpenAIExtractor
 from magi.services.models import Relationship
 from magi.services.schemas import RELATIONSHIP_SCHEMA
 from magi.utils.logging import get_logger
-from pyspark.sql import DataFrame
-from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType
-from pyspark.storagelevel import StorageLevel
 
 from .base import DocumentProcessor
 
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 AVAILABLE_MODELS = {
     # OpenAI models
     "o3-mini-2025-01-31": OpenAIExtractor,
+    "gpt-4o-2024-11-20": OpenAIExtractor,
     # Gemini models
     "gemini-2.0-flash": GeminiExtractor,
     # 2.0 thinking has no json mode
@@ -37,6 +39,7 @@ class RelationshipExtractorProcessor(DocumentProcessor):
     """Processes documents with pre-extracted relationships."""
 
     model: str = DEFAULT_MODEL
+    _extractor_cache = None  # Instance-level cache for the extractor
 
     async def process(self, df: DataFrame) -> DataFrame:
         """
