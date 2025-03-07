@@ -49,7 +49,7 @@ class Resolver(Generic[T], ABC):
         table_name: str,
         reference_column: str,
         similarity_threshold: float = 0.4,
-        max_tokens_per_batch: int = 4000,
+        max_tokens_per_batch: int = 128000 / 2,
         candidate_epsilon: float = 0.05,
         db_candidate_limit: int = 1,
         max_concurrent_requests: int = 40,
