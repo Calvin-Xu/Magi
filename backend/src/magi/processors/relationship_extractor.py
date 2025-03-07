@@ -2,22 +2,15 @@
 
 import asyncio
 from dataclasses import dataclass
-import json
-import os
-from typing import Optional, Type
 
-from magi.extractors.base import RelationshipExtractor
-from magi.extractors.gemini import GeminiExtractor
-from magi.extractors.openai import OpenAIExtractor
+from magi.extractors.gemini_extractor import GeminiExtractor
+from magi.extractors.openai_extractor import OpenAIExtractor
 from magi.services.models import Relationship
 from magi.services.schemas import RELATIONSHIP_SCHEMA
 from magi.utils.logging import get_logger
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    ArrayType,
-    StringType,
-)
+from pyspark.sql.types import ArrayType
 from pyspark.storagelevel import StorageLevel
 
 from .base import DocumentProcessor
@@ -41,105 +34,38 @@ DEFAULT_MODEL = "o3-mini-2025-01-31"
 
 @dataclass
 class RelationshipExtractorProcessor(DocumentProcessor):
-    """Processes documents to extract relationships using an LLM."""
+    """Processes documents with pre-extracted relationships."""
 
     model: str = DEFAULT_MODEL
 
-    async def extract_relationships_from_text(
-        self,
-        text: str,
-        extractor: RelationshipExtractor,
-    ) -> list[dict]:
-        """Extract relationships from text using the provided extractor."""
-        relationships = []
-        async for rel in extractor.extract_relationships(text):
-            relationships.append(rel.model_dump())
-        return relationships
-
-    def get_extractor_class(self) -> Type[RelationshipExtractor]:
-        """Get the appropriate extractor class for the specified model."""
-        if self.model not in AVAILABLE_MODELS:
-            logger.warning(
-                f"Model {self.model} not found in available models. Using default model {DEFAULT_MODEL}."
-            )
-            return AVAILABLE_MODELS[DEFAULT_MODEL]
-        return AVAILABLE_MODELS[self.model]
-
-    # Cache extractor per process
-    def get_extractor(self) -> RelationshipExtractor:
-        """Get or create an extractor instance."""
-        extractor_class = self.get_extractor_class()
-        logger.info(f"Creating {extractor_class.__name__} for model {self.model}")
-        return extractor_class(model=self.model)
-
-    def create_udf(self) -> F.UserDefinedFunction:
-        """Create a Spark UDF for relationship extraction."""
-
-        def extract_relationships(text: str) -> Optional[str]:
-            """Wrapper for async extraction that returns JSON string."""
-            # Create new event loop and extractor for this executor
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            try:
-                # Get cached extractor instance
-                extractor = self.get_extractor()
-
-                # Run extraction
-                relationships = loop.run_until_complete(
-                    self.extract_relationships_from_text(text, extractor)
-                )
-
-                # Always return a valid JSON array, even if empty
-                return json.dumps(relationships or [])
-
-            except Exception as e:
-                logger.exception(f"Error in relationship extraction: {str(e)}")
-                return json.dumps([])  # Return empty array instead of None
-            finally:
-                loop.close()
-
-        return F.udf(extract_relationships, StringType())
-
     async def process(self, df: DataFrame) -> DataFrame:
         """
-        Extract relationships from document content.
+        Process pre-extracted relationships from documents.
 
         Args:
-            df: DataFrame containing documents with content
+            df: DataFrame containing documents with relationships_json
 
         Returns:
             DataFrame with extracted relationships
         """
-        logger.info(f"Processing documents with model: {self.model}")
+        logger.info(f"Processing pre-extracted relationships from model: {self.model}")
 
-        # Create UDF for extraction
-        extract_rels_udf = self.create_udf()
-
-        # https://community.databricks.com/t5/data-engineering/accelerating-row-wise-python-udf-functions-without-using-pandas/td-p/15328
-        df = df.repartition(os.cpu_count())
-        # Extract relationships and cache BEFORE any transformations
-        # (to avoid UDFs being run multiple times)
-        df_with_json = df.withColumn(
-            "relationships_json",
-            extract_rels_udf(F.col("content")),
-        ).persist(StorageLevel.MEMORY_AND_DISK)
-
-        await asyncio.to_thread(df_with_json.count)
-
-        # Now do the JSON parsing
-        df_with_relationships = df_with_json.withColumn(
+        # Parse the pre-extracted relationships JSON
+        df_with_relationships = df.withColumn(
             "extracted_relationships",
             F.from_json(
                 F.col("relationships_json"),
                 ArrayType(RELATIONSHIP_SCHEMA),
             ),
-        )
+        ).persist(StorageLevel.MEMORY_AND_DISK)
+
+        # Ensure the parsing is triggered
+        await asyncio.to_thread(df_with_relationships.count)
 
         # Explode the array of relationships into separate rows
         exploded_df = df_with_relationships.select(
             F.col("uri").alias("source_document_uri"),
-            F.explode("extracted_relationships").alias("relationship"),
+            F.explode_outer("extracted_relationships").alias("relationship"),
         )
 
         # Select fields from the relationship and add the source_document_uri from the document

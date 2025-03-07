@@ -7,12 +7,16 @@ import asyncpg
 from pyspark.sql import DataFrame, SparkSession
 
 from magi.embedders.voyage import VoyageEmbeddingProvider
-from magi.processors import ObjectResolutionProcessor, RelationshipExtractorProcessor
-from magi.resolvers import OpenAIResolver, Resolver
+from magi.processors.object_resolution_processor import ObjectResolutionProcessor
+from magi.processors.relationship_extractor import RelationshipExtractorProcessor
+from magi.resolvers.base import Resolver
+from magi.resolvers import OpenAIResolver
 from magi.utils import get_logger, set_global_log_level
 from .aws import AWSCredentials, create_aws_client
 from .models import Entity, RelationshipType
-from .s3 import DocumentBatch, S3DocumentReader
+from .relationship_extraction import RelationshipExtractionService
+from .s3 import S3DocumentReader
+from .schemas import DocumentBatch
 
 # Create a logger for this module
 logger = get_logger(__name__)
@@ -50,6 +54,7 @@ class Pipeline:
 
         self.spark = spark
         self.conn = conn
+        self.model = model
 
         if embedding_provider is None:
             embedding_provider = VoyageEmbeddingProvider()
@@ -70,9 +75,21 @@ class Pipeline:
         self.entity_resolver = entity_resolver
         self.rel_type_resolver = rel_type_resolver
 
+        # Create an extractor based on the model
+        from magi.processors.relationship_extractor import (
+            AVAILABLE_MODELS,
+            DEFAULT_MODEL,
+        )
+
+        extractor_class = AVAILABLE_MODELS.get(model, AVAILABLE_MODELS[DEFAULT_MODEL])
+        self.extractor = extractor_class(model=model)
+        
+        # Create the relationship extraction service
+        self.relationship_extraction_service = RelationshipExtractionService(self.extractor)
+
         # Initialize S3 reader
         s3_client = create_aws_client("s3", credentials)
-        self.reader = S3DocumentReader(s3_client, credentials)
+        self.reader = S3DocumentReader(s3_client, credentials=credentials)
 
         # Initialize processors
         self.processors = [
@@ -95,33 +112,38 @@ class Pipeline:
         Process documents through the pipeline.
 
         Args:
-            base_uri: Base S3 URI to process
+            base_uri: Base URI for documents (e.g., s3://bucket/prefix)
 
         Yields:
             Processed DataFrames
         """
         logger.info(f"Processing documents from {base_uri}")
 
-        async for batch in self.reader.read_documents(base_uri):
+        # Read documents from S3
+        document_batches = self.reader.read_documents(base_uri)
+        
+        # Extract relationships from documents
+        document_batches_with_relationships = self.relationship_extraction_service.process_batches(document_batches)
+
+        # Process each batch
+        async for batch in document_batches_with_relationships:
             # Convert batch to DataFrame
             df = self._batch_to_dataframe(batch)
 
-            # Deduplicate
-            df = df.dropDuplicates(["content"])
-
-            # Run through processors
+            # Apply each processor in sequence
             for processor in self.processors:
-                logger.info(f"Running processor: {processor.__class__.__name__}")
+                logger.info(f"Applying processor {processor.__class__.__name__}")
                 df = await processor.process(df)
 
             yield df
 
-        logger.info("Document processing completed")
-
     def _batch_to_dataframe(self, batch: DocumentBatch) -> DataFrame:
         """Convert document batch to Spark DataFrame."""
-        rows = [(doc.uri, doc.content, doc.file_type) for doc in batch.documents]
+        rows = [
+            (doc.uri, doc.content, doc.file_type, doc.relationships_json)
+            for doc in batch.documents
+        ]
         return self.spark.createDataFrame(
             rows,
-            ["uri", "content", "file_type"],
+            ["uri", "content", "file_type", "relationships_json"],
         )

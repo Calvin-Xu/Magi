@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, TypeVar, cast
+from typing import Any, Callable, Optional, TypeVar, cast
 
 # Type variables for decorator typing
 F = TypeVar("F", bound=Callable[..., Any])

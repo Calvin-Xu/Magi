@@ -18,6 +18,7 @@ class TextDocument:
     uri: str  # Full S3 URI
     content: str  # Plain text content
     file_type: str  # Original file type
+    relationships_json: str = ""  # JSON string of extracted relationships
 
 
 @dataclass

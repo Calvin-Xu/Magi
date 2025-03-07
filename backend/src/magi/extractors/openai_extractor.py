@@ -42,7 +42,7 @@ MODEL_LIMITS: Dict[str, ModelLimits] = {
         rpm=10_000,
         tpm=10_000_000,
         input_token_limit=8192,
-        max_concurrent=20,
+        max_concurrent=10,
     ),
 }
 
