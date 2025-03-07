@@ -7,6 +7,7 @@ import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 
 from magi.config import POSTGRES_CONFIG
+from magi.processors.relationship_extractor import AVAILABLE_MODELS, DEFAULT_MODEL
 from magi.services.aws import AWSCredentials
 from magi.services.checks import run_health_checks
 from magi.services.pipeline import Pipeline
@@ -74,6 +75,11 @@ def create_gradio_app() -> gr.Blocks:
                 label="AWS Secret Access Key",
                 placeholder="Optional - will use environment variables if not provided",
                 type="password",
+            )
+            model_dropdown = gr.Dropdown(
+                label="Model",
+                choices=list(AVAILABLE_MODELS.keys()),
+                value=DEFAULT_MODEL,
             )
 
         with gr.Row():
@@ -210,6 +216,7 @@ def create_gradio_app() -> gr.Blocks:
             uri: str,
             key_id: Optional[str],
             secret: Optional[str],
+            model: str,
         ) -> DataFrame:
             """Process text files and extract relationships."""
 
@@ -228,7 +235,9 @@ def create_gradio_app() -> gr.Blocks:
                 credentials = (
                     AWSCredentials(key_id, secret) if key_id or secret else None
                 )
-                pipeline = Pipeline(spark, conn, credentials=credentials)
+                pipeline = Pipeline(
+                    spark, conn, model=model, credentials=credentials
+                )
 
                 total_documents = 0
                 first_df = None
@@ -312,7 +321,7 @@ def create_gradio_app() -> gr.Blocks:
 
         process_btn.click(
             fn=process_files,
-            inputs=[s3_uri, aws_key_id, aws_secret],
+            inputs=[s3_uri, aws_key_id, aws_secret, model_dropdown],
             outputs=[output_df],
         )
 

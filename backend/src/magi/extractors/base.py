@@ -1,6 +1,7 @@
 """Base classes for relationship extractors."""
 
 import asyncio
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -110,11 +111,6 @@ class RelationshipExtractor(ABC):
         """Extract relationships from a single chunk of text."""
         pass
 
-    @abstractmethod
-    def _chunk_text(self, text: str) -> List[TextChunk]:
-        """Split text into chunks that fit within token limit."""
-        pass
-
     async def extract_relationships(
         self,
         text: str,
@@ -148,6 +144,116 @@ class RelationshipExtractor(ABC):
             # Yield relationships from this chunk
             for relationship in relationships:
                 yield relationship
+
+    def _chunk_text(self, text: str) -> List[TextChunk]:
+        """Split text into chunks that fit within token limit."""
+        chunks = []
+        current_pos = 0
+
+        # First split on multiple newlines (paragraphs)
+        paragraphs = re.split(r"\n\s*\n", text)
+
+        current_chunk = []
+        current_tokens = 0
+
+        for para in paragraphs:
+            para_tokens = self._count_tokens_sync(para)
+
+            if para_tokens > self.max_input_tokens:
+                # Paragraph too long, split on sentences
+                sentences = re.split(r"(?<=[.!?])\s+", para)
+                for sent in sentences:
+                    sent_tokens = self._count_tokens_sync(sent)
+                    if sent_tokens > self.max_input_tokens:
+                        # Sentence too long, split on token limit
+                        words = sent.split()
+                        current_sent = []
+                        current_sent_tokens = 0
+
+                        for word in words:
+                            word_tokens = self._count_tokens_sync(word)
+                            if (
+                                current_sent_tokens + word_tokens
+                                > self.max_input_tokens
+                            ):
+                                # Create new chunk
+                                chunk_text = " ".join(current_sent)
+                                chunks.append(
+                                    TextChunk(
+                                        text=chunk_text,
+                                        start_char=current_pos,
+                                        end_char=current_pos + len(chunk_text),
+                                        is_sentence_boundary=True,
+                                    )
+                                )
+                                current_pos += len(chunk_text) + 1
+                                current_sent = [word]
+                                current_sent_tokens = word_tokens
+                            else:
+                                current_sent.append(word)
+                                current_sent_tokens += word_tokens
+
+                        if current_sent:
+                            chunk_text = " ".join(current_sent)
+                            chunks.append(
+                                TextChunk(
+                                    text=chunk_text,
+                                    start_char=current_pos,
+                                    end_char=current_pos + len(chunk_text),
+                                    is_sentence_boundary=True,
+                                )
+                            )
+                            current_pos += len(chunk_text) + 1
+                    else:
+                        if current_tokens + sent_tokens > self.max_input_tokens:
+                            # Create new chunk from accumulated sentences
+                            chunk_text = " ".join(current_chunk)
+                            chunks.append(
+                                TextChunk(
+                                    text=chunk_text,
+                                    start_char=current_pos,
+                                    end_char=current_pos + len(chunk_text),
+                                    is_sentence_boundary=True,
+                                )
+                            )
+                            current_pos += len(chunk_text) + 1
+                            current_chunk = [sent]
+                            current_tokens = sent_tokens
+                        else:
+                            current_chunk.append(sent)
+                            current_tokens += sent_tokens
+            else:
+                if current_tokens + para_tokens > self.max_input_tokens:
+                    # Create new chunk
+                    chunk_text = " ".join(current_chunk)
+                    chunks.append(
+                        TextChunk(
+                            text=chunk_text,
+                            start_char=current_pos,
+                            end_char=current_pos + len(chunk_text),
+                            is_paragraph_boundary=True,
+                        )
+                    )
+                    current_pos += len(chunk_text) + 2  # +2 for paragraph break
+                    current_chunk = [para]
+                    current_tokens = para_tokens
+                else:
+                    current_chunk.append(para)
+                    current_tokens += para_tokens
+
+        # Add final chunk
+        if current_chunk:
+            chunk_text = " ".join(current_chunk)
+            chunks.append(
+                TextChunk(
+                    text=chunk_text,
+                    start_char=current_pos,
+                    end_char=current_pos + len(chunk_text),
+                    is_paragraph_boundary=True,
+                )
+            )
+
+        return chunks
 
     @property
     def metrics(self) -> List[ExtractionMetrics]:

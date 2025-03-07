@@ -25,11 +25,11 @@ class Pipeline:
         self,
         spark: SparkSession,
         conn: asyncpg.Connection,
+        model: str,
         embedding_provider: Optional[VoyageEmbeddingProvider] = None,
         entity_resolver: Optional[Resolver[Entity]] = None,
         rel_type_resolver: Optional[Resolver[RelationshipType]] = None,
         credentials: Optional[AWSCredentials] = None,
-        model: str = "gemini-2.0-flash",
         log_level: int = logging.DEBUG,
     ):
         """

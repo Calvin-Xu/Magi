@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Dict, Optional, TypeVar, cast
 
 # Type variables for decorator typing
 F = TypeVar("F", bound=Callable[..., Any])
@@ -35,7 +35,7 @@ formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(messag
 os.makedirs(LOG_DIR, exist_ok=True)
 log_file = LOG_DIR / f"magi_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 file_handler = logging.FileHandler(log_file)
-file_handler.setLevel(logging.DEBUG)
+file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(formatter)
 
 # Create a console handler with a higher log level
@@ -50,6 +50,22 @@ root_logger.addHandler(console_handler)
 # Set the default log level
 root_logger.setLevel(logging.INFO)
 
+# Configure specific third-party loggers to reduce noise
+# Set higher log levels for known verbose libraries
+THIRD_PARTY_LOGGERS = {
+    "py4j": logging.WARNING,
+    "py4j.clientserver": logging.WARNING,
+    "py4j.java_gateway": logging.WARNING,
+    "urllib3": logging.WARNING,
+    "matplotlib": logging.WARNING,
+    "asyncio": logging.INFO,
+    "pyspark": logging.INFO,
+}
+
+# Apply configuration to third-party loggers
+for logger_name, level in THIRD_PARTY_LOGGERS.items():
+    logging.getLogger(logger_name).setLevel(level)
+
 
 def get_logger(name: str) -> logging.Logger:
     """
@@ -61,7 +77,16 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         A configured logger instance
     """
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+
+    # Ensure our application loggers inherit from root but can be individually configured
+    if name.startswith("magi"):
+        # Don't override if already explicitly set
+        if not hasattr(logger, "_level_set"):
+            logger.setLevel(root_logger.level)
+            logger._level_set = True
+
+    return logger
 
 
 def set_global_log_level(level: int) -> None:
@@ -72,7 +97,27 @@ def set_global_log_level(level: int) -> None:
         level: Logging level (e.g., logging.DEBUG, logging.INFO)
     """
     root_logger.setLevel(level)
-    console_handler.setLevel(level)
+
+    # Update handlers
+    for handler in root_logger.handlers:
+        handler.setLevel(level)
+
+    # Reset third-party loggers to their specified levels
+    for logger_name, logger_level in THIRD_PARTY_LOGGERS.items():
+        logging.getLogger(logger_name).setLevel(logger_level)
+
+
+def set_logger_level(name: str, level: int) -> None:
+    """
+    Set the log level for a specific logger.
+
+    Args:
+        name: Logger name
+        level: Logging level
+    """
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger._level_set = True
 
 
 def enable_logging() -> None:
@@ -101,28 +146,29 @@ def log_function_call(logger: Optional[logging.Logger] = None) -> Callable[[F], 
     """
 
     def decorator(func: F) -> F:
+        # Get the module name if logger is not provided
+        nonlocal logger
+        if logger is None:
+            logger = get_logger(func.__module__)
+
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not LOGGING_ENABLED:
                 return func(*args, **kwargs)
 
-            nonlocal logger
-            if logger is None:
-                logger = logging.getLogger(func.__module__)
+            # Log function call
+            arg_str = ", ".join(
+                [str(arg) for arg in args] + [f"{k}={v}" for k, v in kwargs.items()]
+            )
+            logger.debug(f"Calling {func.__name__}({arg_str})")
 
-            # Log function call with arguments
-            arg_str = ", ".join([repr(a) for a in args])
-            kwarg_str = ", ".join([f"{k}={repr(v)}" for k, v in kwargs.items()])
-            params = f"{arg_str}{', ' if arg_str and kwarg_str else ''}{kwarg_str}"
-            logger.debug(f"Calling {func.__name__}({params})")
+            # Call the function
+            result = func(*args, **kwargs)
 
-            try:
-                result = func(*args, **kwargs)
-                logger.debug(f"{func.__name__} returned: {repr(result)}")
-                return result
-            except Exception as e:
-                logger.exception(f"Exception in {func.__name__}: {str(e)}")
-                raise
+            # Log the result
+            logger.debug(f"{func.__name__} returned: {result}")
+
+            return result
 
         return cast(F, wrapper)
 
@@ -143,28 +189,29 @@ def log_async_function_call(
     """
 
     def decorator(func: F) -> F:
+        # Get the module name if logger is not provided
+        nonlocal logger
+        if logger is None:
+            logger = get_logger(func.__module__)
+
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             if not LOGGING_ENABLED:
                 return await func(*args, **kwargs)
 
-            nonlocal logger
-            if logger is None:
-                logger = logging.getLogger(func.__module__)
+            # Log function call
+            arg_str = ", ".join(
+                [str(arg) for arg in args] + [f"{k}={v}" for k, v in kwargs.items()]
+            )
+            logger.debug(f"Calling {func.__name__}({arg_str})")
 
-            # Log function call with arguments
-            arg_str = ", ".join([repr(a) for a in args])
-            kwarg_str = ", ".join([f"{k}={repr(v)}" for k, v in kwargs.items()])
-            params = f"{arg_str}{', ' if arg_str and kwarg_str else ''}{kwarg_str}"
-            logger.debug(f"Calling async {func.__name__}({params})")
+            # Call the function
+            result = await func(*args, **kwargs)
 
-            try:
-                result = await func(*args, **kwargs)
-                logger.debug(f"Async {func.__name__} returned: {repr(result)}")
-                return result
-            except Exception as e:
-                logger.exception(f"Exception in async {func.__name__}: {str(e)}")
-                raise
+            # Log the result
+            logger.debug(f"{func.__name__} returned: {result}")
+
+            return result
 
         return cast(F, wrapper)
 

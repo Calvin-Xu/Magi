@@ -61,6 +61,6 @@ RELATIONSHIP_SCHEMA = StructType(
         StructField("constraint_condition", StringType(), True),
         StructField("reason", StringType(), False),
         StructField("is_causal", BooleanType(), False),
-        StructField("source_document", StringType(), True),
+        StructField("source_document_uri", StringType(), True),
     ]
 )

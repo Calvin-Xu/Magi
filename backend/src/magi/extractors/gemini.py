@@ -2,7 +2,6 @@
 
 import asyncio
 import random
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
@@ -13,13 +12,16 @@ from vertexai.preview import tokenization
 
 from magi.config import GEMINI_CONFIG
 from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
+from magi.utils.logging import get_logger
 from .base import (
     ExtractionMetrics,
     RelationshipExtractor,
     RelationshipTriple,
-    TextChunk,
 )
 from .prompts import RELATIONSHIP_EXTRACTION_PROMPT
+
+# Initialize logger
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -100,10 +102,16 @@ class GeminiExtractor(RelationshipExtractor):
         self._model_limits = limits
         self.max_retries = max_retries
 
+        logger.info(f"Initialized GeminiExtractor with model: {model}")
+        logger.debug(
+            f"Model limits: RPM={limits.rpm}, TPM={limits.tpm}, Max input tokens={limits.input_token_limit}"
+        )
+
         # Initialize tokenizer using Vertex AI model ID
         self._tokenizer = tokenization.get_tokenizer_for_model(
             self._model_limits.vertex_model_id
         )
+        logger.debug(f"Using tokenizer for model: {self._model_limits.vertex_model_id}")
 
         # Gemini-specific limits
         self._rate_limit = RateLimit(
@@ -114,14 +122,18 @@ class GeminiExtractor(RelationshipExtractor):
             num_shards=10,
             max_concurrent=4,
         )
+        logger.debug(f"Rate limit configured: {self._rate_limit}")
 
     async def close(self):
         """Clean up resources."""
+        logger.debug("Closing GeminiExtractor resources")
         await self._rate_limiter.close()
 
     async def _count_tokens(self, text: str) -> int:
         """Count tokens using local Gemini tokenizer."""
-        return self._tokenizer.count_tokens(text).total_tokens
+        token_count = self._tokenizer.count_tokens(text).total_tokens
+        logger.debug(f"Token count for text: {token_count} tokens")
+        return token_count
 
     def _count_tokens_sync(self, text: str) -> int:
         """Synchronous version of token counting."""
@@ -129,24 +141,36 @@ class GeminiExtractor(RelationshipExtractor):
 
     async def _call_gemini_api(self, prompt: str) -> Optional[dict]:
         """Make API call to Gemini with rate limiting and retries."""
+        prompt_hash = hash(prompt)
+        logger.debug(f"Calling Gemini API (prompt hash: {prompt_hash})")
+
+        token_count = self._count_tokens_sync(prompt)
+        logger.debug(f"Prompt token count: {token_count}")
+
         last_error = None
         for attempt in range(self.max_retries):
             try:
                 # Get rate limit approval
                 retry_after = await self._rate_limiter.acquire(
                     rate_limit=self._rate_limit,
-                    tokens=self._count_tokens_sync(prompt),
+                    tokens=token_count,
                     reserve=True,
                 )
 
                 if retry_after:
-                    # Add more initial delay for first attempt
+                    # In case we are told to wait until a specific time:
+                    wait_seconds = max(0.0, retry_after - datetime.now().time())
                     if attempt == 0:
-                        retry_after += (
-                            random.random() * 30
-                        )  # Up to 30 seconds initial delay
-                    await asyncio.sleep(retry_after - datetime.now().timestamp())
+                        # Add a small random initial jitter
+                        wait_seconds += random.random() * 5
+                    logger.debug(
+                        f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                    )
+                    await asyncio.sleep(wait_seconds)
 
+                logger.info(
+                    f"Making Gemini API call (attempt {attempt + 1}/{self.max_retries})"
+                )
                 # Make the API call
                 response = await asyncio.to_thread(
                     self.client.models.generate_content,
@@ -157,27 +181,34 @@ class GeminiExtractor(RelationshipExtractor):
                         "response_schema": RelationshipList,
                     },
                 )
-                print(f"Response: {response.text}")
+                logger.debug(f"Received response: {response.text}")
                 return response
 
             except Exception as e:
                 last_error = e
-                print(
-                    f"Error in Gemini API call (prompt hash: {hash(prompt)}) (attempt {attempt + 1}): {str(e)}"
+                logger.error(
+                    f"Error in Gemini API call (prompt hash: {prompt_hash}) (attempt {attempt + 1}/{self.max_retries}): {str(e)}"
                 )
 
                 if "RESOURCE_EXHAUSTED" in str(e):
                     if attempt < self.max_retries - 1:
-                        await asyncio.sleep(30 * 2**attempt)
+                        backoff_time = 30 * 2**attempt
+                        logger.info(
+                            f"Resource exhausted, backing off for {backoff_time} seconds before retry"
+                        )
+                        await asyncio.sleep(backoff_time)
                         continue
 
                 # For non-rate-limit errors, fail fast
                 if "RESOURCE_EXHAUSTED" not in str(e):
+                    logger.error(f"Non-rate-limit error, failing fast: {str(e)}")
                     break
 
-        raise GeminiError(
+        error_msg = (
             f"Failed after {attempt + 1} attempts. Last error: {str(last_error)}"
-        ) from last_error
+        )
+        logger.error(error_msg)
+        raise GeminiError(error_msg) from last_error
 
     async def _extract_relationships_raw(
         self,
@@ -186,34 +217,49 @@ class GeminiExtractor(RelationshipExtractor):
     ) -> List[RelationshipTriple]:
         """Extract relationships from a single chunk of text."""
         start_time = datetime.now()
+        text_preview = text[:100] + "..." if len(text) > 100 else text
+        logger.info(f"Extracting relationships from text: {text_preview}")
 
         try:
             # Prepare prompt with text
             prompt = RELATIONSHIP_EXTRACTION_PROMPT.format(text=text)
+            prompt_hash = hash(prompt)
+            logger.debug(f"Prepared prompt with hash: {prompt_hash}")
 
             # Call Gemini API with retries and rate limiting
+            logger.info("Calling Gemini API with prompt")
             response = await self._call_gemini_api(prompt)
 
             # Handle None response or missing content
             if not response or not response.candidates:
-                print(f"No valid response for prompt hash: {hash(prompt)}")
+                logger.warning(f"No valid response for prompt hash: {prompt_hash}")
                 return []
 
             # Handle missing parsed data
             if not hasattr(response, "parsed") or not response.parsed:
-                print(f"No parsed relationships for prompt hash: {hash(prompt)}")
+                logger.warning(
+                    f"No parsed relationships for prompt hash: {prompt_hash}"
+                )
                 return []
 
             # Record metrics and process response
             duration = (datetime.now() - start_time).total_seconds() * 1000
+            output_tokens = (
+                response.usage_metadata.candidates_token_count
+                if response.usage_metadata
+                else 0
+            )
+
+            logger.info(
+                f"Extraction completed in {duration:.2f}ms. "
+                f"Input tokens: {self._count_tokens_sync(text)}, "
+                f"Output tokens: {output_tokens}"
+            )
+
             self._metrics.append(
                 ExtractionMetrics(
                     input_tokens=self._count_tokens_sync(text),
-                    output_tokens=(
-                        response.usage_metadata.candidates_token_count
-                        if response.usage_metadata
-                        else 0
-                    ),
+                    output_tokens=output_tokens,
                     duration_ms=duration,
                     timestamp=start_time,
                 )
@@ -221,10 +267,20 @@ class GeminiExtractor(RelationshipExtractor):
 
             # Parse response into RelationshipTriples
             relationships = []
-            for rel in response.parsed.relationships:
+            relationship_count = (
+                len(response.parsed.relationships) if response.parsed else 0
+            )
+            logger.info(f"Found {relationship_count} relationships in response")
+
+            for i, rel in enumerate(response.parsed.relationships):
                 # Handle empty constraint condition
                 constraint = (
                     rel.constraint_condition if rel.constraint_condition else ""
+                )
+
+                logger.debug(
+                    f"Relationship {i + 1}/{relationship_count}: "
+                    f"{rel.subject} -> {rel.predicate} -> {rel.object}"
                 )
 
                 relationships.append(
@@ -243,115 +299,5 @@ class GeminiExtractor(RelationshipExtractor):
             return relationships
 
         except Exception as e:
-            print(f"Error in Gemini extraction (prompt hash: {hash(prompt)}): {str(e)}")
+            logger.exception(f"Error in Gemini extraction: {str(e)}")
             return []
-
-    def _chunk_text(self, text: str) -> List[TextChunk]:
-        """Split text into chunks that fit within token limit."""
-        chunks = []
-        current_pos = 0
-
-        # First split on multiple newlines (paragraphs)
-        paragraphs = re.split(r"\n\s*\n", text)
-
-        current_chunk = []
-        current_tokens = 0
-
-        for para in paragraphs:
-            para_tokens = self._count_tokens_sync(para)
-
-            if para_tokens > self.max_input_tokens:
-                # Paragraph too long, split on sentences
-                sentences = re.split(r"(?<=[.!?])\s+", para)
-                for sent in sentences:
-                    sent_tokens = self._count_tokens_sync(sent)
-                    if sent_tokens > self.max_input_tokens:
-                        # Sentence too long, split on token limit
-                        words = sent.split()
-                        current_sent = []
-                        current_sent_tokens = 0
-
-                        for word in words:
-                            word_tokens = self._count_tokens_sync(word)
-                            if (
-                                current_sent_tokens + word_tokens
-                                > self.max_input_tokens
-                            ):
-                                # Create new chunk
-                                chunk_text = " ".join(current_sent)
-                                chunks.append(
-                                    TextChunk(
-                                        text=chunk_text,
-                                        start_char=current_pos,
-                                        end_char=current_pos + len(chunk_text),
-                                        is_sentence_boundary=True,
-                                    )
-                                )
-                                current_pos += len(chunk_text) + 1
-                                current_sent = [word]
-                                current_sent_tokens = word_tokens
-                            else:
-                                current_sent.append(word)
-                                current_sent_tokens += word_tokens
-
-                        if current_sent:
-                            chunk_text = " ".join(current_sent)
-                            chunks.append(
-                                TextChunk(
-                                    text=chunk_text,
-                                    start_char=current_pos,
-                                    end_char=current_pos + len(chunk_text),
-                                    is_sentence_boundary=True,
-                                )
-                            )
-                            current_pos += len(chunk_text) + 1
-                    else:
-                        if current_tokens + sent_tokens > self.max_input_tokens:
-                            # Create new chunk from accumulated sentences
-                            chunk_text = " ".join(current_chunk)
-                            chunks.append(
-                                TextChunk(
-                                    text=chunk_text,
-                                    start_char=current_pos,
-                                    end_char=current_pos + len(chunk_text),
-                                    is_sentence_boundary=True,
-                                )
-                            )
-                            current_pos += len(chunk_text) + 1
-                            current_chunk = [sent]
-                            current_tokens = sent_tokens
-                        else:
-                            current_chunk.append(sent)
-                            current_tokens += sent_tokens
-            else:
-                if current_tokens + para_tokens > self.max_input_tokens:
-                    # Create new chunk
-                    chunk_text = " ".join(current_chunk)
-                    chunks.append(
-                        TextChunk(
-                            text=chunk_text,
-                            start_char=current_pos,
-                            end_char=current_pos + len(chunk_text),
-                            is_paragraph_boundary=True,
-                        )
-                    )
-                    current_pos += len(chunk_text) + 2  # +2 for paragraph break
-                    current_chunk = [para]
-                    current_tokens = para_tokens
-                else:
-                    current_chunk.append(para)
-                    current_tokens += para_tokens
-
-        # Add final chunk
-        if current_chunk:
-            chunk_text = " ".join(current_chunk)
-            chunks.append(
-                TextChunk(
-                    text=chunk_text,
-                    start_char=current_pos,
-                    end_char=current_pos + len(chunk_text),
-                    is_paragraph_boundary=True,
-                )
-            )
-
-        return chunks

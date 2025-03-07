@@ -4,15 +4,16 @@ This resolver uses OpenAI's LLM capabilities to verify if objects are the same.
 """
 
 import asyncio
+import random
 from typing import Dict, List, Set, TypeVar
-
-import tiktoken
-from openai import OpenAI
 
 from magi.config import OPENAI_CONFIG
 from magi.services.models import Entity, RelationshipType
 from magi.services.rate_limiter import DistributedRateLimiter, RateLimit
 from magi.utils import get_logger
+from openai import OpenAI
+import tiktoken
+
 from .base import Resolver
 from .models import (
     LLMVerificationResponse,
@@ -43,6 +44,7 @@ class OpenAIResolver(Resolver[T]):
         model: str = "gpt-4o",
         temperature: float = 0.0,
         api_key: str = OPENAI_CONFIG.api_key,
+        max_retries: int = 5,
     ):
         """
         Initialize the OpenAI resolver.
@@ -57,6 +59,7 @@ class OpenAIResolver(Resolver[T]):
             model: OpenAI model to use
             temperature: Temperature for LLM generation (0-1)
             api_key: OpenAI API key
+            max_retries: Maximum number of retries for API calls (default: 5)
         """
         super().__init__(
             conn,
@@ -69,6 +72,7 @@ class OpenAIResolver(Resolver[T]):
         self.model = model
         self.temperature = temperature
         self.client = OpenAI(api_key=api_key)
+        self.max_retries = max_retries
         # Initialize the tokenizer for the specified model
         self.tokenizer = (
             tiktoken.encoding_for_model(model)
@@ -198,24 +202,61 @@ class OpenAIResolver(Resolver[T]):
                 reserve=True,
             )
 
-            if retry_after:
-                # Wait until we can proceed
-                await asyncio.sleep(retry_after - asyncio.get_event_loop().time())
+            # Implement retry logic for API calls
+            response = None
+            last_exception = None
 
-            # Call the OpenAI API with structured output
-            response = await asyncio.to_thread(
-                self.client.beta.chat.completions.parse,
-                model=self.model,
-                temperature=self.temperature,
-                response_format=LLMVerificationResponse,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant that analyzes objects to determine if they are the same entity or concept.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-            )
+            for attempt in range(self.max_retries):
+                try:
+                    if retry_after:
+                        # In case we are told to wait until a specific time:
+                        wait_seconds = max(
+                            0.0, retry_after - asyncio.get_event_loop().time()
+                        )
+                        if attempt == 0:
+                            # Add a small random initial jitter
+                            wait_seconds += random.random() * 5
+                        logger.debug(
+                            f"Rate limited, waiting for {wait_seconds:.2f} seconds"
+                        )
+                        await asyncio.sleep(wait_seconds)
+                    if attempt > 0:
+                        logger.info(
+                            f"Retry attempt {attempt}/{self.max_retries} for OpenAI API call"
+                        )
+                        # Exponential backoff: wait 2^retry_count seconds before retrying
+                        await asyncio.sleep(2**attempt)
+
+                    # Call the OpenAI API with structured output
+                    response = await asyncio.to_thread(
+                        self.client.beta.chat.completions.parse,
+                        model=self.model,
+                        temperature=self.temperature,
+                        response_format=LLMVerificationResponse,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a helpful assistant that analyzes objects to determine if they are the same entity or concept.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                    )
+
+                    # If we got here, the API call was successful
+                    break
+
+                except Exception as e:
+                    last_exception = e
+                    logger.warning(
+                        f"OpenAI API call failed (attempt {attempt}/{self.max_retries}): {str(e)}"
+                    )
+
+            # If we didn't get a response after all retries, raise the last exception
+            if response is None:
+                if last_exception:
+                    raise last_exception
+                else:
+                    raise RuntimeError("Failed to get response from OpenAI API")
 
             # Process the results
             verification_results = response.choices[0].message.parsed
