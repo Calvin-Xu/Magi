@@ -82,7 +82,6 @@ class ObjectResolutionProcessor:
                 table_name=self.entity_resolver.table_name,
                 reference_column=self.entity_resolver.reference_column,
                 similarity_threshold=self.entity_resolver.similarity_threshold,
-                max_tokens_per_batch=self.entity_resolver.max_tokens_per_batch,
             )
             rel_type_resolver_with_conn = type(self.rel_type_resolver)(
                 conn=rel_type_conn,
@@ -90,7 +89,6 @@ class ObjectResolutionProcessor:
                 table_name=self.rel_type_resolver.table_name,
                 reference_column=self.rel_type_resolver.reference_column,
                 similarity_threshold=self.rel_type_resolver.similarity_threshold,
-                max_tokens_per_batch=self.rel_type_resolver.max_tokens_per_batch,
             )
 
             # Resolve entities and relationship types concurrently
@@ -486,8 +484,60 @@ class ObjectResolutionProcessor:
 
         mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
 
+        # Create caches for resolved entity and relationship type names
+        entity_name_cache = {}
+        rel_type_name_cache = {}
+
         try:
             async with self.conn.transaction():
+                # First, fetch all required entity and relationship type names in bulk
+                entity_refs = set()
+                rel_type_refs = set()
+
+                for row in all_rows:
+                    row_dict = row.asDict()
+                    from_entity_ref = row_dict.get(
+                        Relationship.FROM_ENTITY_REFERENCE_COLUMN
+                    )
+                    to_entity_ref = row_dict.get(
+                        Relationship.TO_ENTITY_REFERENCE_COLUMN
+                    )
+                    rel_type_ref = row_dict.get(
+                        Relationship.RELATIONSHIP_TYPE_REFERENCE_COLUMN
+                    )
+
+                    if from_entity_ref:
+                        entity_refs.add(from_entity_ref)
+                    if to_entity_ref:
+                        entity_refs.add(to_entity_ref)
+                    if rel_type_ref:
+                        rel_type_refs.add(rel_type_ref)
+
+                # Bulk fetch entity names
+                if entity_refs:
+                    entity_query = """
+                    SELECT id, name FROM entities WHERE id = ANY($1)
+                    """
+                    entity_rows = await self.conn.fetch(entity_query, list(entity_refs))
+                    for er in entity_rows:
+                        entity_name_cache[er["id"]] = er["name"]
+
+                # Bulk fetch relationship type names
+                if rel_type_refs:
+                    rel_type_query = """
+                    SELECT id, name FROM relationship_types WHERE id = ANY($1)
+                    """
+                    rel_type_rows = await self.conn.fetch(
+                        rel_type_query, list(rel_type_refs)
+                    )
+                    for rtr in rel_type_rows:
+                        rel_type_name_cache[rtr["id"]] = rtr["name"]
+
+                logger.info(
+                    f"Cached {len(entity_name_cache)} entity names and {len(rel_type_name_cache)} relationship type names"
+                )
+
+                # Now process each relationship
                 for row in all_rows:
                     # Convert the Row to a dict so we can do row_dict.get(...)
                     row_dict = row.asDict()
@@ -531,12 +581,21 @@ class ObjectResolutionProcessor:
                         f"Inserted relationship with ID {relationship_id} in Postgres"
                     )
 
-                    # Memgraph: create the nodes and relationship
-                    from_entity_name = row_dict.get(Relationship.FROM_ENTITY_COLUMN)
-                    to_entity_name = row_dict.get(Relationship.TO_ENTITY_COLUMN)
-                    rel_type_name = row_dict.get(Relationship.RELATIONSHIP_TYPE_COLUMN)
+                    # Get resolved entity and relationship type names from cache
+                    from_entity_name = entity_name_cache.get(from_entity_ref)
+                    to_entity_name = entity_name_cache.get(to_entity_ref)
+                    rel_type_name = rel_type_name_cache.get(rel_type_ref)
 
-                    # Ensure the entity nodes exist or create them
+                    if not all([from_entity_name, to_entity_name, rel_type_name]):
+                        logger.warning(
+                            f"Skipping Memgraph update due to missing resolved names: "
+                            f"from={from_entity_ref}/{from_entity_name}, "
+                            f"to={to_entity_ref}/{to_entity_name}, "
+                            f"rel_type={rel_type_ref}/{rel_type_name}"
+                        )
+                        continue
+
+                    # Memgraph: create the nodes and relationship
                     try:
                         # Check or create the "from" entity
                         check_from = f"""

@@ -368,3 +368,21 @@ pool = ConnectionPool(
 )
 shared_redis_client = aioredis.Redis(connection_pool=pool)
 rate_limiter = DistributedRateLimiter(shared_redis_client)
+
+GPT_4O_RATE_LIMIT = RateLimit(
+    name="gpt-4o-2024-11-20",
+    rpm=10_000,  # 10,000 requests/min
+    tpm=2_000_000,  # 2M tokens/min
+    window_size=60,
+    num_shards=10,
+    max_concurrent=20,
+)
+
+O3_MINI_RATE_LIMIT = RateLimit(
+    name="o3-mini-2025-01-31",
+    rpm=10_000,  # 10,000 requests/min
+    tpm=10_000_000,  # 10M tokens/min
+    window_size=60,
+    num_shards=10,
+    max_concurrent=10,
+)
