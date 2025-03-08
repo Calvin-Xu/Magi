@@ -10,6 +10,7 @@ from magi.config import POSTGRES_CONFIG
 from magi.processors.relationship_extractor import AVAILABLE_MODELS, DEFAULT_MODEL
 from magi.services.aws import AWSCredentials
 from magi.services.checks import run_health_checks
+from magi.services.graph_export import export_graph as export_graph_func
 from magi.services.pipeline import Pipeline
 from magi.services.s3 import list_s3_objects
 from magi.ui.formatters import all_services_ok, format_status_markdown
@@ -89,12 +90,10 @@ def create_gradio_app() -> gr.Blocks:
         output_md = gr.Markdown("")
         output_df = gr.Dataframe()
 
-        # Create DataFrame components for displaying tables
-        gr.Markdown("## Database Tables")
+        # Database Exploration Section
+        gr.Markdown("## Database Exploration")
         with gr.Row():
-            refresh_tables_btn = gr.Button(
-                "Refresh Tables", variant="primary", size="sm"
-            )
+            refresh_data_btn = gr.Button("Refresh Data", variant="primary")
 
         entities_df = gr.Dataframe(label="Entities Table")  # For entities table
         relationship_types_df = gr.Dataframe(
@@ -106,6 +105,21 @@ def create_gradio_app() -> gr.Blocks:
 
         wipe_btn = gr.Button("Wipe All Data", variant="stop")
         wipe_output = gr.Markdown("")
+
+        gr.Markdown("## Export Graph")
+        with gr.Row():
+            export_format = gr.Radio(
+                label="Export Format",
+                choices=["GraphML", "JSON", "CSV"],
+                value="GraphML",
+                info="Select the format to export the graph",
+            )
+            export_graph_btn = gr.Button("Export Graph", variant="primary")
+
+        with gr.Row():
+            export_file = gr.File(label="Exported Graph", interactive=True)
+
+        export_graph_output = gr.Markdown("")
 
         async def browse_s3(
             uri: str,
@@ -235,9 +249,7 @@ def create_gradio_app() -> gr.Blocks:
                 credentials = (
                     AWSCredentials(key_id, secret) if key_id or secret else None
                 )
-                pipeline = Pipeline(
-                    spark, conn, model=model, credentials=credentials
-                )
+                pipeline = Pipeline(spark, conn, model=model, credentials=credentials)
 
                 total_documents = 0
                 first_df = None
@@ -314,6 +326,43 @@ def create_gradio_app() -> gr.Blocks:
                 disable_logging()
                 logger.info("Logging disabled")
 
+        async def export_graph(format_type):
+            try:
+                # Convert UI format selection to lowercase format type
+                format_map = {"GraphML": "graphml", "JSON": "json", "CSV": "csv"}
+                export_format = format_map.get(format_type, "graphml")
+
+                conn = await asyncpg.connect(
+                    host=POSTGRES_CONFIG.host,
+                    port=POSTGRES_CONFIG.port,
+                    user=POSTGRES_CONFIG.user,
+                    password=POSTGRES_CONFIG.password,
+                    database=POSTGRES_CONFIG.database,
+                )
+
+                # Export the graph using the selected format
+                filename, content = await export_graph_func(conn, export_format)
+
+                await conn.close()
+
+                # Create temporary file for download
+                import tempfile
+                import os
+
+                # Create file
+                file_path = os.path.join(tempfile.gettempdir(), filename)
+                with open(file_path, "wb") as f:
+                    f.write(content)
+
+                # Return file for download
+                return (
+                    f"Graph exported successfully as {format_type}. Click to download.",
+                    file_path,
+                )
+            except Exception as e:
+                logger.exception(f"Error exporting graph as {format_type}")
+                return f"Error exporting graph: {str(e)}", None
+
         browse_btn.click(
             fn=browse_s3,
             inputs=[s3_uri, aws_key_id, aws_secret],
@@ -338,7 +387,7 @@ def create_gradio_app() -> gr.Blocks:
         )
 
         # Connect refresh_tables_btn to refresh_data function
-        refresh_tables_btn.click(
+        refresh_data_btn.click(
             fn=refresh_data,
             outputs=[entities_df, relationship_types_df, relationships_df],
         )
@@ -375,6 +424,12 @@ def create_gradio_app() -> gr.Blocks:
                 relationship_types_df,
                 relationships_df,
             ],
+        )
+
+        export_graph_btn.click(
+            fn=export_graph,
+            inputs=[export_format],
+            outputs=[export_graph_output, export_file],
         )
 
     return ui

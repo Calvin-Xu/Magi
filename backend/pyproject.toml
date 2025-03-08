@@ -26,6 +26,7 @@ dependencies = [
     "uvicorn[standard]",
     "pytest-asyncio>=0.25.3",
     "numpy>=1.26.4",
+    "networkx>=2.8.8",
 ]
 
 [project.optional-dependencies]
