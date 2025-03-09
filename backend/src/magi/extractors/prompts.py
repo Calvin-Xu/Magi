@@ -21,12 +21,14 @@ For each relationship, extract the following information:
    - A short label describing the relationship between the subject and object. Use established relationship types (e.g., "is a", "part of", "has a", "has property", "created", etc.) where possible.
    - Use the present tense only for relationships that will always be true, now or in the future.
 6. predicate_description
+   - A concise, standardized description of the abstracted type of relationship between the subject and object as indicated by the predicate.
+   - It must be accurate to this relationship, and also maximally general and reusable by other relationships in possibly different contexts.
 7. constraint_condition
    - A concise description of the conditions under which the statement formed by `subject-predicate-object` holds if it is not always true (in which case write "None"); for temporal constraints, include the most datetimes available;
 8. reason
    - A concise explanation, citing key excerpts from the text, to justify why this relationship is supported.
 9. is_causal
-   - Whether the predicate describes a causal link between numeric random variables. Answer with "yes" or "no".
+   - Whether the relationship describes a causal link between random variables and is supported by quantitative evidence in the text. Answer with "yes" or "no".
 
 Additional Guidelines:
 - Thoroughness: Extract as many accurate relationships as possible.

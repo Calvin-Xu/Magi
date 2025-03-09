@@ -211,10 +211,12 @@ async def export_graph_to_csv(conn: asyncpg.Connection) -> Tuple[str, bytes]:
 
     # Fetch data
     entities = await fetch_entities(conn)
+    rel_types = await fetch_relationship_types(conn)
     relationships = await fetch_relationships(conn)
 
     # Create DataFrames
     entities_df = pd.DataFrame(entities)
+    rel_types_df = pd.DataFrame(rel_types)
     relationships_df = pd.DataFrame(relationships)
 
     # Create CSV content
@@ -230,6 +232,13 @@ async def export_graph_to_csv(conn: asyncpg.Connection) -> Tuple[str, bytes]:
         else:
             zip_file.writestr("entities.csv", "id,name,description")
 
+        # Add relationship types CSV
+        if not rel_types_df.empty:
+            rel_types_csv = rel_types_df.to_csv(index=False)
+            zip_file.writestr("relationship_types.csv", rel_types_csv)
+        else:
+            zip_file.writestr("relationship_types.csv", "id,name,description")
+
         # Add relationships CSV
         if not relationships_df.empty:
             relationships_csv = relationships_df.to_csv(index=False)
@@ -237,7 +246,7 @@ async def export_graph_to_csv(conn: asyncpg.Connection) -> Tuple[str, bytes]:
         else:
             zip_file.writestr(
                 "relationships.csv",
-                "id,from_entity,to_entity,relationship_type,constraint_condition,reason,is_causal,source_document_uri,from_entity_name,to_entity_name,relationship_type_name,relationship_type_description",
+                "id,from_entity,to_entity,relationship_type,constraint_condition,reason,is_causal,source_document_uri",
             )
 
     # Get timestamp for filename
