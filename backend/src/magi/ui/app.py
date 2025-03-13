@@ -114,6 +114,11 @@ def create_gradio_app() -> gr.Blocks:
                 value="GraphML",
                 info="Select the format to export the graph",
             )
+            include_embeddings = gr.Checkbox(
+                label="Include Embeddings",
+                value=False,
+                info="Include embedding vectors in the export (increases file size)",
+            )
             export_graph_btn = gr.Button("Export Graph", variant="primary")
 
         with gr.Row():
@@ -326,7 +331,7 @@ def create_gradio_app() -> gr.Blocks:
                 disable_logging()
                 logger.info("Logging disabled")
 
-        async def export_graph(format_type):
+        async def export_graph(format_type, include_embeddings):
             try:
                 # Convert UI format selection to lowercase format type
                 format_map = {"GraphML": "graphml", "JSON": "json", "CSV": "csv"}
@@ -341,7 +346,7 @@ def create_gradio_app() -> gr.Blocks:
                 )
 
                 # Export the graph using the selected format
-                filename, content = await export_graph_func(conn, export_format)
+                filename, content = await export_graph_func(conn, export_format, include_embeddings)
 
                 await conn.close()
 
@@ -428,7 +433,7 @@ def create_gradio_app() -> gr.Blocks:
 
         export_graph_btn.click(
             fn=export_graph,
-            inputs=[export_format],
+            inputs=[export_format, include_embeddings],
             outputs=[export_graph_output, export_file],
         )
 

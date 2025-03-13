@@ -16,11 +16,14 @@ from magi.utils import get_logger
 logger = get_logger(__name__)
 
 
-async def fetch_entities(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
+async def fetch_entities(
+    conn: asyncpg.Connection, include_embeddings: bool = False
+) -> List[Dict[str, Any]]:
     """Fetch all entities from the database.
 
     Args:
         conn: PostgreSQL connection
+        include_embeddings: Whether to include embedding vectors in the result
 
     Returns:
         List of entity dictionaries
@@ -29,18 +32,47 @@ async def fetch_entities(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
     SELECT 
         id, 
         name, 
-        description 
+        description
+        {embedding_field}
     FROM entities
     """
-    entities = await conn.fetch(query)
-    return [dict(entity) for entity in entities]
+
+    # Conditionally include the embedding field
+    embedding_field = ", embedding" if include_embeddings else ""
+    formatted_query = query.format(embedding_field=embedding_field)
+
+    entities = await conn.fetch(formatted_query)
+
+    # Convert row objects to dictionaries
+    result = []
+    for entity in entities:
+        entity_dict = dict(entity)
+
+        # Convert embedding from PostgreSQL vector to Python list if present
+        if include_embeddings and entity_dict.get("embedding"):
+            # Remove curly braces and split by commas
+            embedding_str = entity_dict["embedding"]
+            if (
+                isinstance(embedding_str, str)
+                and embedding_str.startswith("{")
+                and embedding_str.endswith("}")
+            ):
+                embedding_values = embedding_str[1:-1].split(",")
+                entity_dict["embedding"] = [float(val) for val in embedding_values]
+
+        result.append(entity_dict)
+
+    return result
 
 
-async def fetch_relationship_types(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
+async def fetch_relationship_types(
+    conn: asyncpg.Connection, include_embeddings: bool = False
+) -> List[Dict[str, Any]]:
     """Fetch all relationship types from the database.
 
     Args:
         conn: PostgreSQL connection
+        include_embeddings: Whether to include embedding vectors in the result
 
     Returns:
         List of relationship type dictionaries
@@ -49,11 +81,37 @@ async def fetch_relationship_types(conn: asyncpg.Connection) -> List[Dict[str, A
     SELECT 
         id, 
         name, 
-        description 
+        description
+        {embedding_field}
     FROM relationship_types
     """
-    rel_types = await conn.fetch(query)
-    return [dict(rel_type) for rel_type in rel_types]
+
+    # Conditionally include the embedding field
+    embedding_field = ", embedding" if include_embeddings else ""
+    formatted_query = query.format(embedding_field=embedding_field)
+
+    rel_types = await conn.fetch(formatted_query)
+
+    # Convert row objects to dictionaries
+    result = []
+    for rel_type in rel_types:
+        rel_type_dict = dict(rel_type)
+
+        # Convert embedding from PostgreSQL vector to Python list if present
+        if include_embeddings and rel_type_dict.get("embedding"):
+            # Remove curly braces and split by commas
+            embedding_str = rel_type_dict["embedding"]
+            if (
+                isinstance(embedding_str, str)
+                and embedding_str.startswith("{")
+                and embedding_str.endswith("}")
+            ):
+                embedding_values = embedding_str[1:-1].split(",")
+                rel_type_dict["embedding"] = [float(val) for val in embedding_values]
+
+        result.append(rel_type_dict)
+
+    return result
 
 
 async def fetch_relationships(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
@@ -88,32 +146,42 @@ async def fetch_relationships(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
     return [dict(rel) for rel in relationships]
 
 
-async def export_graph_to_graphml(conn: asyncpg.Connection) -> Tuple[str, bytes]:
+async def export_graph_to_graphml(
+    conn: asyncpg.Connection, include_embeddings: bool = False
+) -> Tuple[str, bytes]:
     """Export the knowledge graph to GraphML format.
 
     Args:
         conn: PostgreSQL connection
+        include_embeddings: Whether to include embedding vectors in the export
 
     Returns:
         Tuple containing filename and the GraphML content as bytes
     """
-    logger.info("Exporting knowledge graph to GraphML format")
+    logger.info(
+        f"Exporting knowledge graph to GraphML format (include_embeddings={include_embeddings})"
+    )
 
     # Create a directed graph
     G = nx.DiGraph()
 
     # Fetch data
-    entities = await fetch_entities(conn)
+    entities = await fetch_entities(conn, include_embeddings)
     relationships = await fetch_relationships(conn)
 
     # Add nodes to the graph
     for entity in entities:
-        G.add_node(
-            entity["id"],
-            label=entity["name"],
-            description=entity["description"] or "",
-            node_type="entity",
-        )
+        node_attrs = {
+            "label": entity["name"],
+            "description": entity["description"] or "",
+            "node_type": "entity",
+        }
+
+        # Add embedding if available
+        if include_embeddings and "embedding" in entity:
+            node_attrs["embedding"] = str(entity["embedding"])
+
+        G.add_node(entity["id"], **node_attrs)
 
     # Add edges to the graph
     for rel in relationships:
@@ -152,20 +220,25 @@ async def export_graph_to_graphml(conn: asyncpg.Connection) -> Tuple[str, bytes]
     return filename, output.getvalue()
 
 
-async def export_graph_to_json(conn: asyncpg.Connection) -> Tuple[str, bytes]:
+async def export_graph_to_json(
+    conn: asyncpg.Connection, include_embeddings: bool = False
+) -> Tuple[str, bytes]:
     """Export the knowledge graph to JSON format.
 
     Args:
         conn: PostgreSQL connection
+        include_embeddings: Whether to include embedding vectors in the export
 
     Returns:
         Tuple containing filename and the JSON content as bytes
     """
-    logger.info("Exporting knowledge graph to JSON format")
+    logger.info(
+        f"Exporting knowledge graph to JSON format (include_embeddings={include_embeddings})"
+    )
 
     # Fetch data using the helper functions
-    entities = await fetch_entities(conn)
-    rel_types = await fetch_relationship_types(conn)
+    entities = await fetch_entities(conn, include_embeddings)
+    rel_types = await fetch_relationship_types(conn, include_embeddings)
     relationships = await fetch_relationships(conn)
 
     # Create a dictionary with all data
@@ -198,93 +271,94 @@ async def export_graph_to_json(conn: asyncpg.Connection) -> Tuple[str, bytes]:
     return filename, json_data.encode("utf-8")
 
 
-async def export_graph_to_csv(conn: asyncpg.Connection) -> Tuple[str, bytes]:
-    """Export the knowledge graph to CSV format (nodes and edges files zipped).
+async def export_graph_to_csv(
+    conn: asyncpg.Connection, include_embeddings: bool = False
+) -> Tuple[str, bytes]:
+    """Export the knowledge graph to CSV format.
 
     Args:
         conn: PostgreSQL connection
+        include_embeddings: Whether to include embedding vectors in the export
 
     Returns:
-        Tuple containing filename and the ZIP content as bytes
+        Tuple containing filename and the CSV content as bytes (as a ZIP file)
     """
-    logger.info("Exporting knowledge graph to CSV format")
+    logger.info(
+        f"Exporting knowledge graph to CSV format (include_embeddings={include_embeddings})"
+    )
 
-    # Fetch data
-    entities = await fetch_entities(conn)
-    rel_types = await fetch_relationship_types(conn)
+    # Fetch data using the helper functions
+    entities = await fetch_entities(conn, include_embeddings)
+    rel_types = await fetch_relationship_types(conn, include_embeddings)
     relationships = await fetch_relationships(conn)
 
-    # Create DataFrames
+    # Convert to pandas DataFrames
     entities_df = pd.DataFrame(entities)
     rel_types_df = pd.DataFrame(rel_types)
     relationships_df = pd.DataFrame(relationships)
 
-    # Create CSV content
+    # Create a ZIP file containing the CSVs
     import io
     import zipfile
+    from datetime import datetime
 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        # Add entities CSV
+        # Write entities CSV
         if not entities_df.empty:
             entities_csv = entities_df.to_csv(index=False)
             zip_file.writestr("entities.csv", entities_csv)
-        else:
-            zip_file.writestr("entities.csv", "id,name,description")
 
-        # Add relationship types CSV
+        # Write relationship types CSV
         if not rel_types_df.empty:
             rel_types_csv = rel_types_df.to_csv(index=False)
             zip_file.writestr("relationship_types.csv", rel_types_csv)
-        else:
-            zip_file.writestr("relationship_types.csv", "id,name,description")
 
-        # Add relationships CSV
+        # Write relationships CSV
         if not relationships_df.empty:
             relationships_csv = relationships_df.to_csv(index=False)
             zip_file.writestr("relationships.csv", relationships_csv)
-        else:
-            zip_file.writestr(
-                "relationships.csv",
-                "id,from_entity,to_entity,relationship_type,constraint_condition,reason,is_causal,source_document_uri",
-            )
 
     # Get timestamp for filename
-    from datetime import datetime
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"magi_knowledge_graph_{timestamp}.zip"
 
     entity_count = len(entities)
+    rel_type_count = len(rel_types)
     rel_count = len(relationships)
     logger.info(
-        f"CSV export complete: {entity_count} entities, {rel_count} relationships"
+        f"CSV export complete: {entity_count} entities, {rel_type_count} relationship types, {rel_count} relationships"
     )
 
     if entity_count == 0 and rel_count == 0:
         logger.warning("Exported CSV is empty")
 
+    zip_buffer.seek(0)
     return filename, zip_buffer.getvalue()
 
 
-async def export_graph(conn: asyncpg.Connection, format_type: str) -> Tuple[str, bytes]:
+async def export_graph(
+    conn: asyncpg.Connection, format_type: str, include_embeddings: bool = False
+) -> Tuple[str, bytes]:
     """Export the knowledge graph in the specified format.
 
     Args:
         conn: PostgreSQL connection
         format_type: The export format type ('graphml', 'json', or 'csv')
+        include_embeddings: Whether to include embedding vectors in the export
 
     Returns:
         Tuple containing filename and the file content as bytes
     """
-    export_functions = {
-        "graphml": export_graph_to_graphml,
-        "json": export_graph_to_json,
-        "csv": export_graph_to_csv,
-    }
+    logger.info(
+        f"Exporting graph in {format_type} format (include_embeddings={include_embeddings})"
+    )
 
-    if format_type not in export_functions:
-        raise ValueError(f"Unsupported export format: {format_type}")
-
-    export_function = export_functions[format_type]
-    return await export_function(conn)
+    if format_type == "graphml":
+        return await export_graph_to_graphml(conn, include_embeddings)
+    elif format_type == "json":
+        return await export_graph_to_json(conn, include_embeddings)
+    elif format_type == "csv":
+        return await export_graph_to_csv(conn, include_embeddings)
+    else:
+        raise ValueError(f"Unsupported format type: {format_type}")

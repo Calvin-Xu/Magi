@@ -1,12 +1,8 @@
 """
 Concrete OpenAI-based resolver, chunking by max_objects_per_batch.
-Logs:
-- Intra-batch merges as a table
-- Side-by-side LLM inputs & outputs for DB verification
 """
 
 import asyncio
-import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, TypeVar
 
@@ -16,9 +12,13 @@ from openai import OpenAI
 from magi.config import OPENAI_CONFIG
 from magi.services.rate_limiter import O3_MINI_RATE_LIMIT, rate_limiter
 from magi.utils import get_logger
-
 from .base import Resolver
-from .models import ObjectWithEmbedding, MergedEntity, LLMIntraBatchMergeResponse
+from .models import (
+    LLMIntraBatchMergeResponse,
+    MergedEntity,
+    ObjectWithEmbedding,
+    VerificationBatchResponse,
+)
 
 logger = get_logger(__name__)
 T = TypeVar("T")
@@ -36,6 +36,7 @@ class OpenAIResolver(Resolver[T]):
         model: str = "o3-mini-2025-01-31",
         api_key: str = OPENAI_CONFIG.api_key,
         max_retries: int = 5,
+        **kwargs,
     ):
         super().__init__(
             conn,
@@ -44,6 +45,7 @@ class OpenAIResolver(Resolver[T]):
             reference_column,
             similarity_threshold,
             max_objects_per_batch,
+            **kwargs,
         )
         self.model = model
         self.max_retries = max_retries
@@ -51,7 +53,7 @@ class OpenAIResolver(Resolver[T]):
         # Initialize OpenAI
         self.client = OpenAI(api_key=api_key)
 
-        # We use a simple token encoder
+        # We use a token encoder for possible length checks or logging
         self.tokenizer = (
             tiktoken.encoding_for_model(model)
             if model.startswith("gpt-")
@@ -59,7 +61,7 @@ class OpenAIResolver(Resolver[T]):
         )
         self.reserved_tokens = 500
 
-        # Rate limiter
+        # Rate limiter configuration
         self._rate_limiter = rate_limiter
         self._rate_limit = O3_MINI_RATE_LIMIT
 
@@ -71,68 +73,74 @@ class OpenAIResolver(Resolver[T]):
     ) -> List[MergedEntity]:
         """
         Single LLM call for the entire sub-batch. Then log a table of merges.
+        Using structured outputs => LLMIntraBatchMergeResponse
         """
         if not objects:
             return []
 
+        # Build ID mapping to hide the hash_key from the LLM
+        idx_to_hash = {i: obj.hash_key for i, obj in enumerate(objects)}
         prompt_text = self._build_intra_batch_merge_prompt(objects)
-        # We ignore token count, because we rely on max_objects_per_batch for safety
-        response_text = await self._call_openai(prompt_text)
 
-        merged_entities = self._parse_intra_batch_merge_result(response_text, objects)
-
-        #  Logging a table: each row => {merged entity name, temp_id} => {names + hashes of members}
-        self._log_merged_table(merged_entities, objects)
-
-        return merged_entities
-
-    def _build_intra_batch_merge_prompt(
-        self, objects: List[ObjectWithEmbedding]
-    ) -> str:
-        prompt = (
-            "You are an expert AI system in semantic coreference resolution. We have a batch of objects, each with "
-            "a name, description, and a 'hash_key'. Identify duplicates and merge them into a single object. "
-            "Two objects are duplicates if they refer to the same entity, concept, or idea, such as aliases.\n\n"
-            "Output JSON:\n"
-            "{\n"
-            '  "merged_entities": [\n'
-            "    {\n"
-            '      "merged_id": "string",\n'
-            '      "merged_name": "string",\n'
-            '      "merged_description": "string",\n'
-            '      "member_hash_keys": ["hashA","hashB"]\n'
-            "    }, ...\n"
-            "  ]\n"
-            "}\n\n"
-            "Constraints:\n"
-            "- Each input object must appear exactly once in exactly one merged group.\n"
-            "- 'merged_name' is a single canonical name that the object is best known by.\n"
-            "- 'merged_description' is the best globally-identifying description of the object "
-            "   synthesized from existing descriptions. If you learn aliases and names the object is known by, add them.\n\n"
-            "Here are the objects:\n"
-        )
-        for i, obj in enumerate(objects):
-            prompt += (
-                f"Object {i}:\n"
-                f"  hash_key: {obj.hash_key}\n"
-                f"  name: {obj.name}\n"
-                f"  description: {obj.description}\n\n"
+        # Attempt the call up to self.max_retries times if we get an error or refusal
+        merged_entities: List[MergedEntity] = []
+        attempt_count = 0
+        while attempt_count < self.max_retries:
+            attempt_count += 1
+            logger.info(
+                f"[OpenAIResolver] Attempt {attempt_count} to get merges via structured output..."
             )
-        prompt += "\nReturn valid JSON only."
-        return prompt
 
-    def _parse_intra_batch_merge_result(
-        self, response_text: str, objects: List[ObjectWithEmbedding]
-    ) -> List[MergedEntity]:
-        try:
-            data = json.loads(response_text)
-            resp = LLMIntraBatchMergeResponse(**data)
-        except Exception as e:
-            logger.warning(
-                f"[OpenAIResolver._parse_intra_batch_merge_result] JSON parse fail: {e}"
+            try:
+                # Acquire rate limit token
+                if not await self._acquire_rate_limit(token_count=1000):
+                    continue
+
+                # Do the structured-output call
+                completion = await asyncio.to_thread(
+                    self.client.beta.chat.completions.parse,
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert AI system in semantic coreference resolution for knowledge graph construction."
+                                " Always return valid JSON that conforms to the given schema."
+                            ),
+                        },
+                        {"role": "user", "content": prompt_text},
+                    ],
+                    response_format=LLMIntraBatchMergeResponse,  # pydantic model
+                )
+
+                # Check for refusal
+                if completion.choices[0].message.refusal:
+                    logger.warning(
+                        "[OpenAIResolver._merge_intra_batch] Model refused to answer."
+                    )
+                    # We can either break or retry
+                    continue
+
+                # All good: parse the pydantic object
+                parsed_obj: LLMIntraBatchMergeResponse = completion.choices[
+                    0
+                ].message.parsed
+                merged_entities = self._build_merged_entities_from_llm(
+                    parsed_obj, objects, idx_to_hash
+                )
+                break  # success, break out
+            except Exception as e:
+                logger.warning(
+                    f"[OpenAIResolver._merge_intra_batch] Failed attempt {attempt_count}: {e}"
+                )
+                await asyncio.sleep(2**attempt_count)
+
+        # If we never got a successful parse, fallback => 1-1 merges
+        if not merged_entities:
+            logger.error(
+                "[OpenAIResolver._merge_intra_batch] All attempts failed or refused. Fallback => 1-1 merges."
             )
-            # fallback
-            return [
+            merged_entities = [
                 MergedEntity(
                     temp_id=obj.hash_key,
                     name=obj.name,
@@ -143,25 +151,84 @@ class OpenAIResolver(Resolver[T]):
                 for obj in objects
             ]
 
+        # Log a table: each row => entity => members
+        self._log_merged_table(merged_entities, objects)
+        return merged_entities
+
+    def _build_intra_batch_merge_prompt(
+        self, objects: List[ObjectWithEmbedding]
+    ) -> str:
+        """
+        We pass integer IDs to the LLM, not the actual hash_key. The LLM's output
+        must conform to LLMIntraBatchMergeResponse Pydantic schema.
+        """
+        prompt = (
+            "We have a batch of objects, each with an integer ID, name, and description. "
+            "Identify duplicates and merge them into a single object. Two objects are duplicates "
+            "if they refer to the same entity or concept (aliases, synonyms, etc.).\n\n"
+            "Return JSON matching this schema:\n"
+            "LLMIntraBatchMergeResponse =>\n"
+            "{\n"
+            '  "merged_entities": [\n'
+            "    {\n"
+            '      "merged_id": "string",\n'
+            '      "merged_name": "string",\n'
+            '      "merged_description": "string",\n'
+            '      "member_ids": [0,1]\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Constraints:\n"
+            "- Each input object must appear exactly once in exactly one merged group.\n"
+            "- 'merged_name' is a single canonical name that the object is best known by.\n"
+            "- 'merged_description' is the best globally-identifying description, merging info.\n\n"
+            "Objects:\n"
+        )
+
+        for i, obj in enumerate(objects):
+            prompt += f"Object {i}:\n"
+            prompt += f"  ID: {i}\n"
+            prompt += f"  name: {obj.name}\n"
+            prompt += f"  description: {obj.description}\n\n"
+
+        prompt += "Return valid JSON only."
+        return prompt
+
+    def _build_merged_entities_from_llm(
+        self,
+        response_obj: LLMIntraBatchMergeResponse,
+        objects: List[ObjectWithEmbedding],
+        idx_to_hash: Dict[int, str],
+    ) -> List[MergedEntity]:
+        """
+        Convert the LLM's structured output back to a list of MergedEntity, mapping integer IDs
+        to real hash_keys.
+        """
         obj_map = {o.hash_key: o for o in objects}
-        merged_entities = []
-        for me in resp.merged_entities:
-            # If only one member, reuse embedding
-            if len(me.member_hash_keys) == 1:
-                single_hk = me.member_hash_keys[0]
+        merged_entities: List[MergedEntity] = []
+
+        for me in response_obj.merged_entities:
+            if len(me.member_ids) == 1:
+                single_hk = idx_to_hash[me.member_ids[0]]
                 source_obj = obj_map.get(single_hk)
                 init_emb = source_obj.embedding if source_obj else []
             else:
                 init_emb = []
+
+            member_hashes = [
+                idx_to_hash[m_id] for m_id in me.member_ids if m_id in idx_to_hash
+            ]
+
             merged_entities.append(
                 MergedEntity(
                     temp_id=me.merged_id,
                     name=me.merged_name,
                     description=me.merged_description,
-                    member_hash_keys=me.member_hash_keys,
+                    member_hash_keys=member_hashes,
                     embedding=init_emb,
                 )
             )
+
         return merged_entities
 
     def _log_merged_table(
@@ -216,23 +283,35 @@ class OpenAIResolver(Resolver[T]):
 
         # Step B: gather top DB candidates
         all_embeddings = [m.embedding for m in to_resolve]
-        candidates_batch = await self.find_similar_by_embeddings_batch(
-            self.conn, self.table_name, all_embeddings, self.similarity_threshold, 1
+
+        # Use a larger batch size for more efficient database queries
+        # This significantly reduces the number of database round trips
+        batch_size = min(100, len(all_embeddings))  # Use up to 100 embeddings per batch
+        logger.info(
+            f"[_match_or_insert_merged_entities] Finding similar embeddings for {len(all_embeddings)} entities with batch_size={batch_size}"
         )
 
-        pairs = []
+        candidates_batch = await self.find_similar_by_embeddings_batch(
+            self.conn,
+            self.table_name,
+            all_embeddings,
+            self.similarity_threshold,
+            limit_per_query=1,
+            batch_size=batch_size,
+        )
+
+        pairs: List[Tuple[MergedEntity, Optional[dict]]] = []
         for idx, entity in enumerate(to_resolve):
             cands = candidates_batch[idx]
             if cands:
                 pairs.append((entity, cands[0]))
             else:
-                # no DB match => we will just insert
                 pairs.append((entity, None))
 
-        # Step C: single LLM call
+        # Step C: single LLM call to verify each pair
         to_insert = await self._verify_db_pairs_single_call(pairs)
 
-        # Step D: insert needed
+        # Step D: for anything the LLM says "not same", insert new
         for entity in to_insert:
             new_id = await self._safe_insert(entity)
             entity.reference_id = new_id
@@ -258,52 +337,123 @@ class OpenAIResolver(Resolver[T]):
         return list(distinct_refs)[0]
 
     async def _verify_db_pairs_single_call(
-        self, pairs: List[Tuple[MergedEntity, dict]]
+        self, pairs: List[Tuple[MergedEntity, Optional[dict]]]
     ) -> List[MergedEntity]:
         """
-        Single LLM call. For each pair => are_same => unify or insert => we produce logging side-by-side.
+        Single LLM call. For each pair => are_same => unify or insert new.
         Return the list of entities that must be inserted new.
         """
-        # Collect pairs that have no DB candidate
         no_candidate = [(e, None) for (e, c) in pairs if c is None]
         verify_pairs = [(e, c) for (e, c) in pairs if c is not None]
 
-        # Log LLM input side-by-side
-        if verify_pairs:
-            logger.info("[_verify_db_pairs_single_call] LLM input pairs:")
-            for idx, (entity, candidate) in enumerate(verify_pairs):
-                logger.info(f" Pair {idx}:")
-                logger.info(
-                    f"   - MergedEntity: name='{entity.name}', desc='{entity.description}'"
-                )
-                logger.info(
-                    f"   - DB Candidate: name='{candidate['name']}', desc='{candidate['description']}'"
-                )
-
-        to_insert = []
         # immediate insertion for those that have no DB candidate
+        to_insert: List[MergedEntity] = []
         for entity, _ in no_candidate:
             to_insert.append(entity)
 
         if not verify_pairs:
             return to_insert
 
-        # Build the prompt
+        # Log LLM input side-by-side
+        logger.info("[_verify_db_pairs_single_call] LLM input pairs:")
+        for idx, (entity, candidate) in enumerate(verify_pairs):
+            logger.info(f" Pair {idx}:")
+            logger.info(
+                f"   - MergedEntity: name='{entity.name}', desc='{entity.description}'"
+            )
+            logger.info(
+                f"   - DB Candidate: name='{candidate['name']}', desc='{candidate['description']}'"
+            )
+
         prompt_text = self._build_verification_batch_prompt(verify_pairs)
-        response_text = await self._call_openai(prompt_text)
 
-        # Parse
-        results = self._parse_verification_batch_output(response_text, verify_pairs)
+        # Attempt call with structured outputs => VerificationBatchResponse
+        attempt_count = 0
+        verify_results = []
+        while attempt_count < self.max_retries:
+            attempt_count += 1
+            logger.info(
+                f"[_verify_db_pairs_single_call] Attempt #{attempt_count} for verification."
+            )
 
-        # Now log side-by-side with LLM results
-        logger.info("[_verify_db_pairs_single_call] LLM verification results:")
-        for idx, (are_same, updated_name, updated_desc) in enumerate(results):
+            try:
+                if not await self._acquire_rate_limit(token_count=1000):
+                    continue
+
+                completion = await asyncio.to_thread(
+                    self.client.beta.chat.completions.parse,
+                    model=self.model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are an expert AI system in semantic coreference resolution. "
+                                "Return valid JSON exactly matching VerificationBatchResponse."
+                            ),
+                        },
+                        {"role": "user", "content": prompt_text},
+                    ],
+                    response_format=VerificationBatchResponse,
+                )
+
+                # Check refusal
+                if completion.choices[0].message.refusal:
+                    logger.warning(
+                        "[_verify_db_pairs_single_call] Model refused to answer."
+                    )
+                    continue
+
+                results_obj = completion.choices[0].message.parsed
+                verify_results = results_obj.results
+                break
+            except Exception as e:
+                logger.warning(
+                    f"[_verify_db_pairs_single_call] Attempt {attempt_count} failed: {e}"
+                )
+                await asyncio.sleep(2**attempt_count)
+
+        if not verify_results:
+            logger.error(
+                "[_verify_db_pairs_single_call] All attempts failed or refused. Defaulting are_same=False."
+            )
+            # fallback => all false
+            verify_results = []
+            for i in range(len(verify_pairs)):
+                verify_results.append((False, None, None))
+
+            # We'll just manually shape them into a suitable structure
+            # to keep code simpler
+            from magi.resolvers.models import VerificationResult
+
+            vrs = []
+            for i in range(len(verify_pairs)):
+                vrs.append(
+                    VerificationResult(
+                        pair_index=i,
+                        are_same=False,
+                        updated_name=None,
+                        updated_description=None,
+                    )
+                )
+            verify_results = vrs
+
+        # Now apply results
+        # results is a list of VerificationResult in the same order as the prompt
+        # "pair_index" indexes into verify_pairs
+        for vr in verify_results:
+            idx = vr.pair_index
+            if idx < 0 or idx >= len(verify_pairs):
+                continue
             entity, candidate = verify_pairs[idx]
+            are_same = vr.are_same
+            updated_name = vr.updated_name
+            updated_desc = vr.updated_description
+
             logger.info(
                 f" Pair {idx} => are_same={are_same}, updated_name='{updated_name}', "
                 f"updated_desc='{(updated_desc[:50] + '...') if updated_desc else None}'"
             )
-            if are_same:
+            if are_same and candidate is not None:
                 entity.reference_id = candidate["reference_id"]
                 updates = {}
                 if updated_name:
@@ -323,59 +473,7 @@ class OpenAIResolver(Resolver[T]):
         self, pairs: List[Tuple[MergedEntity, dict]]
     ) -> str:
         """
-        We want a single JSON response:
-          {
-            "results": [
-              {
-                "pair_index": 0,
-                "are_same": true,
-                "updated_name": "...",
-                "updated_description": "..."
-              },
-              ...
-            ]
-          }
-        """
-        prompt = (
-            "You are an expert AI system in semantic coreference resolution. "
-            "We have several pairs of (new_object, existing_object). For each pair, determine "
-            "if they new object refers to the same entity, concept, or idea as the existing object."
-            "If they are the same, compose a possibly updated canonical name that the object is best known by, "
-            "and possibly augment the globally identifying description of the object. "
-            " - are_same (true/false)\n"
-            " - updated_name (if are_same)\n"
-            " - updated_description (if are_same)\n\n"
-            "Return valid JSON:\n"
-            "{\n"
-            '  "results": [\n'
-            "    {\n"
-            '      "pair_index": <int>,\n'
-            '      "are_same": <bool>,\n'
-            '      "updated_name": <string or null>,\n'
-            '      "updated_description": <string or null>\n'
-            "    }, ...\n"
-            "  ]\n"
-            "}\n\n"
-            "Here are the pairs:\n"
-        )
-        for idx, (entity, candidate) in enumerate(pairs):
-            prompt += f"Pair {idx}:\n"
-            prompt += " New Object:\n"
-            prompt += f"   name: {entity.name}\n"
-            prompt += f"   description: {entity.description}\n\n"
-            prompt += " Existing Object:\n"
-            prompt += f"   name: {candidate['name']}\n"
-            prompt += f"   description: {candidate['description']}\n\n"
-        prompt += "Return only JSON."
-        return prompt
-
-    def _parse_verification_batch_output(
-        self,
-        response_text: str,
-        pairs: List[Tuple[MergedEntity, dict]],
-    ) -> List[Tuple[bool, Optional[str], Optional[str]]]:
-        """
-        Expects:
+        The LLM must return:
         {
           "results": [
             {
@@ -387,75 +485,60 @@ class OpenAIResolver(Resolver[T]):
             ...
           ]
         }
-        Return list of (are_same, updated_name, updated_desc) in same order as pairs.
+        This matches VerificationBatchResponse exactly.
         """
-        out = [(False, None, None)] * len(pairs)
-        try:
-            data = json.loads(response_text)
-            items = data.get("results", [])
-            for item in items:
-                pair_index = item.get("pair_index")
-                if pair_index is not None and 0 <= pair_index < len(pairs):
-                    are_same = item.get("are_same", False)
-                    updated_name = item.get("updated_name")
-                    updated_desc = item.get("updated_description")
-                    if not isinstance(are_same, bool):
-                        are_same = False
-                    if not isinstance(updated_name, (str, type(None))):
-                        updated_name = None
-                    if not isinstance(updated_desc, (str, type(None))):
-                        updated_desc = None
-                    out[pair_index] = (are_same, updated_name, updated_desc)
-        except Exception as e:
-            logger.warning(f"Failed to parse LLM verification JSON: {e}")
-            # fallback => all false
-        return out
+        prompt = (
+            "We have several pairs of (new_merged_entity, existing_db_object). For each pair:\n"
+            "- are_same: bool (whether they refer to the same entity)\n"
+            "- if are_same=true, updated_name and updated_description can unify or refine the entity.\n\n"
+            "Return JSON conforming to VerificationBatchResponse =>\n"
+            "{\n"
+            '  "results": [\n'
+            "    {\n"
+            '      "pair_index": 0,\n'
+            '      "are_same": true,\n'
+            '      "updated_name": "...",\n'
+            '      "updated_description": "..." \n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Pairs:\n"
+        )
+
+        for idx, (entity, candidate) in enumerate(pairs):
+            prompt += f"Pair {idx}:\n"
+            prompt += " New Merged Object:\n"
+            prompt += f"   name: {entity.name}\n"
+            prompt += f"   description: {entity.description}\n\n"
+            prompt += " Existing DB Object:\n"
+            prompt += f"   name: {candidate['name']}\n"
+            prompt += f"   description: {candidate['description']}\n\n"
+
+        prompt += "Return only valid JSON."
+        return prompt
 
     # --------------------------------------------------------------
-    # Internal OpenAI call
+    # Internal / Helper
     # --------------------------------------------------------------
-    async def _call_openai(self, prompt_text: str) -> str:
+    async def _acquire_rate_limit(self, token_count: int = 1000):
         """
-        Single function to call the LLM with a prompt (ignoring token count).
-        We rely on max_objects_per_batch instead of tokens here.
+        Acquire a rate limit token with the specified token count.
+
+        Args:
+            token_count: Number of tokens to count against the rate limit
         """
         async with self._rate_limiter.acquire_context(
             rate_limit=self._rate_limit,
-            tokens=1000,  # or any constant cost
+            tokens=token_count,
             reserve=True,
         ) as retry_after:
             if retry_after:
                 wait_seconds = max(0.0, retry_after - datetime.now().timestamp())
-                logger.debug(f"Rate-limited. Sleeping {wait_seconds} seconds.")
-                await asyncio.sleep(wait_seconds)
-
-        last_exc = None
-        for attempt in range(self.max_retries):
-            try:
-                response = await asyncio.to_thread(
-                    self.client.chat.completions.create,
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are an expert AI system in semantic coreference resolution for knowledge graph construction. "
-                                "Return valid JSON exactly as requested."
-                            ),
-                        },
-                        {"role": "user", "content": prompt_text},
-                    ],
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                logger.warning(f"[OpenAIResolver] call failed (attempt {attempt}): {e}")
-                last_exc = e
-                await asyncio.sleep(2**attempt)
-
-        logger.error("[OpenAIResolver] All attempts failed, returning empty JSON.")
-        if last_exc:
-            raise last_exc
-        return "{}"
+                if wait_seconds > 0:
+                    logger.debug(f"Rate-limited. Sleeping {wait_seconds:.2f} seconds.")
+                    await asyncio.sleep(wait_seconds)
+                    return False  # Indicate we should retry
+            return True  # Indicate we can proceed
 
     # --------------------------------------------------------------
     # DB Insert / Update / Retrieve
@@ -498,35 +581,6 @@ class OpenAIResolver(Resolver[T]):
         query = f"UPDATE {self.table_name} SET {set_clause} WHERE id=$1"
         await self.conn.execute(query, *values)
 
-    async def find_similar_by_embedding(
-        self,
-        conn,
-        table_name: str,
-        query_embedding: List[float],
-        threshold: float,
-        limit: int,
-    ) -> List[dict]:
-        emb_str = str(query_embedding)
-        query = f"""
-        SELECT id, name, description, 1 - (embedding <=> $1::vector) AS similarity
-        FROM {table_name}
-        WHERE 1 - (embedding <=> $1::vector) > $2
-        ORDER BY similarity DESC
-        LIMIT $3
-        """
-        rows = await conn.fetch(query, emb_str, threshold, limit)
-        results = []
-        for r in rows:
-            results.append(
-                {
-                    "reference_id": r["id"],
-                    "name": r["name"],
-                    "description": r["description"],
-                    "similarity": r["similarity"],
-                }
-            )
-        return results
-
     async def find_similar_by_embeddings_batch(
         self,
         conn,
@@ -534,15 +588,89 @@ class OpenAIResolver(Resolver[T]):
         query_embeddings: List[List[float]],
         threshold: float,
         limit_per_query: int = 1,
+        batch_size: int = 50,
     ) -> List[List[dict]]:
-        # We'll do it sequentially for clarity
-        out = []
-        for emb in query_embeddings:
-            row = await self.find_similar_by_embedding(
-                conn, table_name, emb, threshold, limit_per_query
+        """
+        Find similar embeddings for a batch of query embeddings.
+        Uses a more efficient batched approach with fewer database round trips.
+
+        Args:
+            conn: Database connection
+            table_name: Table to search in
+            query_embeddings: List of embedding vectors to search for
+            threshold: Similarity threshold (0-1)
+            limit_per_query: Maximum number of results per query embedding
+            batch_size: Number of embeddings to process in a single database query
+
+        Returns:
+            List of lists of matching records
+        """
+        if not query_embeddings:
+            return []
+
+        results = [[] for _ in range(len(query_embeddings))]
+
+        # Process in batches to avoid overwhelming the database
+        for batch_start in range(0, len(query_embeddings), batch_size):
+            batch_end = min(batch_start + batch_size, len(query_embeddings))
+            batch = query_embeddings[batch_start:batch_end]
+
+            # Create a single query that uses unnest() to process multiple embeddings
+            query = f"""
+            WITH numbered_embeddings AS (
+                SELECT 
+                    unnest($1::int[]) AS query_idx,
+                    unnest($2::vector[]) AS query_embedding
             )
-            out.append(row)
-        return out
+            SELECT 
+                t.id,
+                t.name,
+                t.description,
+                1 - (t.embedding <=> ne.query_embedding) AS similarity,
+                ne.query_idx
+            FROM 
+                {table_name} t,
+                numbered_embeddings ne
+            WHERE 
+                1 - (t.embedding <=> ne.query_embedding) > $3
+            ORDER BY 
+                ne.query_idx, similarity DESC
+            """
+
+            # Prepare parameters
+            query_indices = list(range(batch_start, batch_end))
+            embedding_strings = [str(emb) for emb in batch]
+
+            # Execute the query
+            rows = await conn.fetch(query, query_indices, embedding_strings, threshold)
+
+            # Process results - group by query_idx and limit to top results per query
+            current_idx = None
+            count = 0
+
+            for row in rows:
+                query_idx = row["query_idx"]
+
+                # If we've moved to a new query index, reset the counter
+                if current_idx != query_idx:
+                    current_idx = query_idx
+                    count = 0
+
+                # Only add up to limit_per_query results per query
+                if count < limit_per_query:
+                    results[query_idx].append(
+                        {
+                            "reference_id": row["id"],
+                            "name": row["name"],
+                            "description": row["description"],
+                            "similarity": row["similarity"],
+                        }
+                    )
+                    count += 1
+
+        return results
 
     async def close(self):
+        """Clean up resources."""
+        logger.debug("Closing OpenAIResolver resources")
         await self._rate_limiter.close()

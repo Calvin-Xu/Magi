@@ -1,11 +1,11 @@
 """
 Abstract base class for entity resolvers.
-Implements a multi-batch approach based on max_objects_per_batch, with no sub-batching inside each batch.
+Implements a multi-batch approach based on max_objects_per_batch.
 """
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, TypeVar, Generic
+from typing import Dict, List, Optional, TypeVar, Generic, Tuple
 
 import asyncpg
 
@@ -52,6 +52,7 @@ class Resolver(ABC, Generic[T]):
         candidate_epsilon: float = 0.05,
         db_candidate_limit: int = 1,
         max_concurrent_requests: int = 40,
+        max_resolve_retries: int = 5,
     ):
         self.conn = conn
         self.embedding_provider = embedding_provider
@@ -62,18 +63,17 @@ class Resolver(ABC, Generic[T]):
         self.db_candidate_limit = db_candidate_limit
         self.max_objects_per_batch = max_objects_per_batch
         self.max_concurrent_requests = max_concurrent_requests
+        self.max_resolve_retries = max_resolve_retries
 
     async def resolve(self, objects_dict: Dict[str, T]) -> Dict[str, T]:
         """
-        Public entry point. We chunk the entire input dict into sub-batches of at most max_objects_per_batch.
+        Public entry point. We chunk the entire input dict into sub-batches of
+        at most max_objects_per_batch.
 
-        Each sub-batch is processed fully (merge, match, insert) in isolation.
-        Then we combine all results into one dictionary (but no cross-batch merges).
-
-        If you want a single giant batch, set max_objects_per_batch >= len(objects_dict).
+        Each sub-batch is processed in isolation. Then we combine all results.
         """
         if not objects_dict:
-            logger.info("No objects to resolve, returning empty dictionary")
+            logger.info("No objects to resolve, returning empty dictionary.")
             return {}
 
         # Break into sub-batches
@@ -87,7 +87,8 @@ class Resolver(ABC, Generic[T]):
 
         for batch_index, batch_dict in enumerate(batches, start=1):
             logger.info(
-                f"[Resolver] Processing batch {batch_index}/{len(batches)} with {len(batch_dict)} objects..."
+                f"[Resolver] Processing batch {batch_index}/{len(batches)} "
+                f"with {len(batch_dict)} objects..."
             )
 
             try:
@@ -110,13 +111,62 @@ class Resolver(ABC, Generic[T]):
 
     async def _process_single_batch(self, batch_dict: Dict[str, T]) -> Dict[str, T]:
         """
-        Process one batch in a single pipeline pass (no sub-batching).
+        Process one batch with up to self.max_resolve_retries attempts at merging and matching.
+        Any objects still unresolved after max_retries are fallback-inserted so that all
+        eventually have a reference ID.
+        """
+        unresolved_dict = dict(batch_dict)  # start with everything
+        resolved_dict: Dict[str, T] = {}
+        attempt = 0
+
+        while attempt < self.max_resolve_retries and unresolved_dict:
+            attempt += 1
+            logger.info(
+                f"[Resolver] Attempt #{attempt} for batch of {len(unresolved_dict)} objects."
+            )
+
+            partial_resolved, leftover = await self._process_single_batch_pass(
+                unresolved_dict
+            )
+
+            # Add the newly resolved to final
+            resolved_dict.update(partial_resolved)
+
+            # leftover will be retried
+            unresolved_dict = leftover
+
+        # After exhausting attempts, fallback-insert for any leftover
+        if unresolved_dict:
+            logger.warning(
+                f"[Resolver] {len(unresolved_dict)} objects still unresolved after "
+                f"{self.max_resolve_retries} attempts. Fallback-inserting."
+            )
+            for hk, obj in unresolved_dict.items():
+                logger.info(
+                    f"  Fallback insert for hash_key={hk}, name={getattr(obj, 'name', '')}"
+                )
+                new_id = await self._safe_insert(self._object_to_model(obj))
+                setattr(obj, "postgres_reference", new_id)
+                resolved_dict[hk] = obj
+
+        return resolved_dict
+
+    async def _process_single_batch_pass(
+        self, batch_dict: Dict[str, T]
+    ) -> Tuple[Dict[str, T], Dict[str, T]]:
+        """
+        Single pipeline pass for the sub-batch:
+          1) Convert + compute embeddings
+          2) LLM-based merging
+          3) Possibly re-embed merges
+          4) Match or insert => references assigned
+          5) Build partial_resolved (those with reference_id) vs leftover (missing references or missing from LLM)
+
+        Returns:
+          (partial_resolved_dict, leftover_dict)
         """
         # 1) Convert + compute embeddings
         object_models = self._convert_and_embed(batch_dict)
-
-        # But _convert_and_embed is synchronous, let's gather them properly
-        # Actually we might do it asynchronously
         object_models = await self._compute_embeddings(object_models)
 
         # 2) Merge all in one step
@@ -128,62 +178,37 @@ class Resolver(ABC, Generic[T]):
         # 4) Match or insert => references assigned
         await self._match_or_insert_merged_entities(merged_entities, batch_dict)
 
-        # 5) Build final map
-        logger.info(
-            f"[Resolver] Building final map from {len(merged_entities)} merged entities"
-        )
-        for entity in merged_entities:
-            logger.info(
-                f"  Entity: name='{entity.name}', reference_id={entity.reference_id}, member_hash_keys={entity.member_hash_keys}"
-            )
+        # 5) separate partial resolved from leftover
+        partial_resolved: Dict[str, T] = {}
+        leftover: Dict[str, T] = {}
 
-        resolved_dict: Dict[str, T] = {}
+        # Gather all hash_keys that the LLM mentioned in merges
+        mentioned_keys = set()
         for entity in merged_entities:
-            if entity.reference_id is None:
-                # Insert as fallback
-                logger.warning(
-                    f"[Resolver] Entity missing reference_id: {entity.name}. Performing fallback insert."
-                )
-                new_id = await self._safe_insert(entity)
-                entity.reference_id = new_id
-                logger.info(
-                    f"[Resolver] Fallback insert complete. New reference_id: {new_id}"
-                )
-
             for hk in entity.member_hash_keys:
-                original_obj = batch_dict.get(hk)
-                if original_obj is None:
-                    # LLM might have introduced unknown keys
-                    logger.warning(
-                        f"[Resolver] LLM introduced unknown hash_key={hk}; skipping."
-                    )
-                    continue
-                updated_obj = self._model_to_object(entity, original_obj)
-                setattr(updated_obj, "postgres_reference", entity.reference_id)
-                resolved_dict[hk] = updated_obj
+                mentioned_keys.add(hk)
 
-        # For any objects not included by the LLM, fallback
-        missing_keys = set(batch_dict.keys()) - set(resolved_dict.keys())
-        if missing_keys:
-            logger.warning(
-                f"[Resolver] Found {len(missing_keys)} objects not included in LLM results. Adding fallbacks."
-            )
-            for hk in missing_keys:
-                logger.info(f"[Resolver] Adding fallback for hash_key={hk}")
-                resolved_dict[hk] = batch_dict[hk]
+        for entity in merged_entities:
+            # If no reference_id after matching, we consider leftover
+            if entity.reference_id is None:
+                # leftover
+                for hk in entity.member_hash_keys:
+                    original_obj = batch_dict[hk]
+                    leftover[hk] = original_obj
+            else:
+                # reference_id found => partial_resolved
+                for hk in entity.member_hash_keys:
+                    original_obj = batch_dict[hk]
+                    updated_obj = self._model_to_object(entity, original_obj)
+                    setattr(updated_obj, "postgres_reference", entity.reference_id)
+                    partial_resolved[hk] = updated_obj
 
-        return resolved_dict
+        # Any objects not mentioned at all by the LLM => leftover
+        not_mentioned = set(batch_dict.keys()) - mentioned_keys
+        for hk in not_mentioned:
+            leftover[hk] = batch_dict[hk]
 
-    def _convert_and_embed(self, batch_dict: Dict[str, T]) -> List[ObjectWithEmbedding]:
-        """
-        Convert T -> ObjectWithEmbedding. Synchronous step. We pass to _compute_embeddings later.
-        """
-        object_models: List[ObjectWithEmbedding] = []
-        for hash_key, obj in batch_dict.items():
-            model = self._object_to_model(obj)
-            model.hash_key = hash_key
-            object_models.append(model)
-        return object_models
+        return partial_resolved, leftover
 
     @abstractmethod
     async def _merge_intra_batch(
@@ -259,6 +284,17 @@ class Resolver(ABC, Generic[T]):
         """
         pass
 
+    def _convert_and_embed(self, batch_dict: Dict[str, T]) -> List[ObjectWithEmbedding]:
+        """
+        Convert T -> ObjectWithEmbedding. Synchronous step. We pass to _compute_embeddings later.
+        """
+        object_models: List[ObjectWithEmbedding] = []
+        for hash_key, obj in batch_dict.items():
+            model = self._object_to_model(obj)
+            model.hash_key = hash_key
+            object_models.append(model)
+        return object_models
+
     def _object_to_model(self, obj: T) -> ObjectWithEmbedding:
         reference_id = getattr(obj, "postgres_reference", None)
         embedding = getattr(obj, "embedding", []) or []
@@ -267,7 +303,7 @@ class Resolver(ABC, Generic[T]):
             description=getattr(obj, "description", ""),
             embedding=embedding,
             reference_id=reference_id,
-            hash_key="",
+            hash_key="",  # assigned later
         )
 
     def _model_to_object(self, entity: MergedEntity, original_obj: T) -> T:
@@ -306,16 +342,6 @@ class Resolver(ABC, Generic[T]):
     # -----------------------------------------------------------
     # Utility for DB retrieval
     # -----------------------------------------------------------
-    @abstractmethod
-    async def find_similar_by_embedding(
-        self,
-        conn,
-        table_name: str,
-        query_embedding: List[float],
-        threshold: float,
-        limit: int,
-    ) -> List[dict]:
-        pass
 
     @abstractmethod
     async def find_similar_by_embeddings_batch(

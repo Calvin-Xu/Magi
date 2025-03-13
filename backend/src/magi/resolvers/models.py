@@ -1,8 +1,7 @@
 """
-Revised data models for the resolver module.
+Data models for the resolver module.
 
 This module contains Pydantic models used by resolvers for entity resolution.
-We have added a new model, IntraBatchMergeResult, to capture merges of input objects.
 """
 
 from typing import Any, Dict, Generic, List, Optional, TypeVar
@@ -33,19 +32,19 @@ class IntraBatchMergeResult(BaseModel):
     """
     Model to store the LLM's merging of multiple input objects that it thinks are duplicates.
 
-    For example:
+    Example structure for structured outputs:
     {
       "merged_id": "A short unique identifier for this merged entity",
       "merged_name": "A new or chosen name that best represents the group",
       "merged_description": "A combined description from all duplicates",
-      "member_hash_keys": ["abc123", "def456"]  # hash_keys for the objects that merged
+      "member_ids": [0, 1, 2]  # We store integer IDs for the batch
     }
     """
 
     merged_id: str
     merged_name: str
     merged_description: str
-    member_hash_keys: List[str]
+    member_ids: List[int]
 
 
 class MergedEntity(BaseModel):
@@ -75,13 +74,13 @@ class LLMIntraBatchMergeResponse(BaseModel):
           "merged_id": "entity_0",
           "merged_name": "Mark Antony",
           "merged_description": "Combined description",
-          "member_hash_keys": ["7b472bd2...", "7d71a06f..."]
+          "member_ids": [0, 1]
         },
         {
           "merged_id": "entity_1",
           "merged_name": "Octavian",
           "merged_description": "....",
-          "member_hash_keys": ["7d71a06f..."]
+          "member_ids": [2]
         },
         ...
       ]
@@ -99,3 +98,37 @@ class ProcessedObject(BaseModel, Generic[T]):
     hash_key: str  # Matches the original input object's hash_key
     is_new: bool = False
     has_updates: bool = False
+
+
+#
+# Models for verification responses
+#
+class VerificationResult(BaseModel):
+    """
+    Schema for verifying whether a merged entity is the same as a DB candidate.
+    """
+
+    pair_index: int
+    are_same: bool
+    updated_name: Optional[str]
+    updated_description: Optional[str]
+
+
+class VerificationBatchResponse(BaseModel):
+    """
+    Wrapper for the LLM's verification of multiple (new_object, existing_db_object) pairs.
+
+    {
+      "results": [
+        {
+          "pair_index": 0,
+          "are_same": true,
+          "updated_name": "...",
+          "updated_description": "..."
+        },
+        ...
+      ]
+    }
+    """
+
+    results: List[VerificationResult]
