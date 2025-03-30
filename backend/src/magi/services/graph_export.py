@@ -5,7 +5,7 @@ to various formats including GraphML.
 """
 
 import io
-from typing import Dict, Tuple, List, Any, Optional
+from typing import Dict, Tuple, List, Any
 
 import asyncpg
 import networkx as nx

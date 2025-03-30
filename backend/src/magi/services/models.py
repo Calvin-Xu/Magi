@@ -9,12 +9,14 @@ class Entity:
     embedding: Optional[List[float]] = field(default_factory=list)
     postgres_reference: Optional[int] = None
     hash_key: Optional[str] = None
+    from_imported_schema: bool = False
 
     # Define column names as class variables
     NAME_COLUMN: str = "name"
     DESCRIPTION_COLUMN: str = "description"
     EMBEDDING_COLUMN: str = "embedding"
     POSTGRES_REFERENCE_COLUMN: str = "postgres_reference"
+    FROM_IMPORTED_SCHEMA_COLUMN: str = "from_imported_schema"
 
 
 @dataclass
@@ -24,6 +26,7 @@ class RelationshipType:
     embedding: Optional[List[float]] = field(default_factory=list)
     postgres_reference: Optional[int] = None
     hash_key: Optional[str] = None
+    from_imported_schema: bool = False
 
     # Define column names as class variables
     NAME_COLUMN: str = "name"
@@ -31,6 +34,7 @@ class RelationshipType:
     EMBEDDING_COLUMN: str = "embedding"
     POSTGRES_REFERENCE_COLUMN: str = "postgres_reference"
     RELATIONSHIP_TYPE_HASH_COLUMN: str = "relationship_type_hash"
+    FROM_IMPORTED_SCHEMA_COLUMN: str = "from_imported_schema"
 
 
 @dataclass
@@ -42,6 +46,7 @@ class Relationship:
     reason: Optional[str] = None
     is_causal: bool = False
     source_document_uri: Optional[str] = None
+    from_imported_schema: bool = False
 
     # Define column names as class variables
     FROM_ENTITY_COLUMN: str = "from_entity"
@@ -60,3 +65,4 @@ class Relationship:
     FROM_ENTITY_REFERENCE_COLUMN: str = "from_entity_reference"
     TO_ENTITY_REFERENCE_COLUMN: str = "to_entity_reference"
     RELATIONSHIP_TYPE_REFERENCE_COLUMN: str = "relationship_type_reference"
+    FROM_IMPORTED_SCHEMA_COLUMN: str = "from_imported_schema"

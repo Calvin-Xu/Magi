@@ -346,7 +346,9 @@ def create_gradio_app() -> gr.Blocks:
                 )
 
                 # Export the graph using the selected format
-                filename, content = await export_graph_func(conn, export_format, include_embeddings)
+                filename, content = await export_graph_func(
+                    conn, export_format, include_embeddings
+                )
 
                 await conn.close()
 

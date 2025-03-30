@@ -4,24 +4,22 @@ Concrete OpenAI-based resolver, chunking by max_objects_per_batch.
 
 import asyncio
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, TypeVar
+from typing import Literal, Dict, List, Optional, Tuple
 
 import tiktoken
 from openai import OpenAI
 
 from magi.config import OPENAI_CONFIG
-from magi.services.rate_limiter import O3_MINI_RATE_LIMIT, rate_limiter
-from magi.utils import get_logger
-from .base import Resolver
-from .models import (
+from magi.resolvers.base import MergedEntity, ObjectWithEmbedding, Resolver, T
+from magi.resolvers.models import (
     LLMIntraBatchMergeResponse,
-    MergedEntity,
-    ObjectWithEmbedding,
     VerificationBatchResponse,
 )
+from magi.services.rate_limiter import O3_MINI_RATE_LIMIT, rate_limiter
+from magi.utils import get_logger
+from magi.services import db_operations
 
 logger = get_logger(__name__)
-T = TypeVar("T")
 
 
 class OpenAIResolver(Resolver[T]):
@@ -29,7 +27,7 @@ class OpenAIResolver(Resolver[T]):
         self,
         conn,
         embedding_provider,
-        table_name: str,
+        table_name: Literal["entities", "relationship_types"],
         reference_column: str = "id",
         similarity_threshold: float = 0.4,
         max_objects_per_batch: int = 50,
@@ -544,42 +542,55 @@ class OpenAIResolver(Resolver[T]):
     # DB Insert / Update / Retrieve
     # --------------------------------------------------------------
     async def _find_duplicate_in_db(self, entity: MergedEntity) -> Optional[int]:
-        query = f"SELECT id FROM {self.table_name} WHERE name=$1 LIMIT 1"
-        row = await self.conn.fetchrow(query, entity.name)
-        if row:
-            return row["id"]
+        if self.table_name == "entities":
+            result = await db_operations.find_entity_by_name(self.conn, entity.name)
+            if result:
+                return result["id"]
+        elif self.table_name == "relationship_types":
+            result = await db_operations.find_relationship_type_by_name(
+                self.conn, entity.name
+            )
+            if result:
+                return result["id"]
+        else:
+            raise ValueError(f"Unknown table name: {self.table_name}")
+
         return None
 
     async def _insert_object_into_db(self, entity: MergedEntity) -> int:
-        fields = ["name", "description", "embedding"]
-        values = [entity.name, entity.description, str(entity.embedding)]
-        placeholders = [f"${i + 1}" for i in range(len(values))]
-        placeholders[-1] += "::vector"
-        query = f"""
-        INSERT INTO {self.table_name} ({", ".join(fields)})
-        VALUES ({", ".join(placeholders)})
-        RETURNING id
-        """
-        new_id = await self.conn.fetchval(query, *values)
-        return new_id
+        # Convert MergedEntity to the appropriate model based on table_name
+        if self.table_name == "entities":
+            from magi.services.models import Entity
+
+            obj = Entity(
+                name=entity.name,
+                description=entity.description,
+                embedding=entity.embedding,
+                from_imported_schema=False,  # Resolver-created objects are not from imported schema
+            )
+
+            return await db_operations.insert_entity(self.conn, obj)
+
+        elif self.table_name == "relationship_types":
+            from magi.services.models import RelationshipType
+
+            obj = RelationshipType(
+                name=entity.name,
+                description=entity.description,
+                embedding=entity.embedding,
+                from_imported_schema=False,  # Resolver-created objects are not from imported schema
+            )
+
+            return await db_operations.insert_relationship_type(self.conn, obj)
+
+        else:
+            raise ValueError(f"Unknown table name: {self.table_name}")
 
     async def _update_object_in_db(self, object_id: int, updates: dict) -> None:
-        if not updates:
-            return
-        set_clauses = []
-        values = [object_id]
-        param_index = 2
-        for field, value in updates.items():
-            if field == "embedding" and isinstance(value, list):
-                set_clauses.append(f"{field} = ${param_index}::vector")
-                values.append(str(value))
-            else:
-                set_clauses.append(f"{field} = ${param_index}")
-                values.append(value)
-            param_index += 1
-        set_clause = ", ".join(set_clauses)
-        query = f"UPDATE {self.table_name} SET {set_clause} WHERE id=$1"
-        await self.conn.execute(query, *values)
+        if self.table_name == "entities":
+            await db_operations.update_entity(self.conn, object_id, updates)
+        elif self.table_name == "relationship_types":
+            await db_operations.update_relationship_type(self.conn, object_id, updates)
 
     async def find_similar_by_embeddings_batch(
         self,
@@ -592,7 +603,6 @@ class OpenAIResolver(Resolver[T]):
     ) -> List[List[dict]]:
         """
         Find similar embeddings for a batch of query embeddings.
-        Uses a more efficient batched approach with fewer database round trips.
 
         Args:
             conn: Database connection
@@ -605,70 +615,9 @@ class OpenAIResolver(Resolver[T]):
         Returns:
             List of lists of matching records
         """
-        if not query_embeddings:
-            return []
-
-        results = [[] for _ in range(len(query_embeddings))]
-
-        # Process in batches to avoid overwhelming the database
-        for batch_start in range(0, len(query_embeddings), batch_size):
-            batch_end = min(batch_start + batch_size, len(query_embeddings))
-            batch = query_embeddings[batch_start:batch_end]
-
-            # Create a single query that uses unnest() to process multiple embeddings
-            query = f"""
-            WITH numbered_embeddings AS (
-                SELECT 
-                    unnest($1::int[]) AS query_idx,
-                    unnest($2::vector[]) AS query_embedding
-            )
-            SELECT 
-                t.id,
-                t.name,
-                t.description,
-                1 - (t.embedding <=> ne.query_embedding) AS similarity,
-                ne.query_idx
-            FROM 
-                {table_name} t,
-                numbered_embeddings ne
-            WHERE 
-                1 - (t.embedding <=> ne.query_embedding) > $3
-            ORDER BY 
-                ne.query_idx, similarity DESC
-            """
-
-            # Prepare parameters
-            query_indices = list(range(batch_start, batch_end))
-            embedding_strings = [str(emb) for emb in batch]
-
-            # Execute the query
-            rows = await conn.fetch(query, query_indices, embedding_strings, threshold)
-
-            # Process results - group by query_idx and limit to top results per query
-            current_idx = None
-            count = 0
-
-            for row in rows:
-                query_idx = row["query_idx"]
-
-                # If we've moved to a new query index, reset the counter
-                if current_idx != query_idx:
-                    current_idx = query_idx
-                    count = 0
-
-                # Only add up to limit_per_query results per query
-                if count < limit_per_query:
-                    results[query_idx].append(
-                        {
-                            "reference_id": row["id"],
-                            "name": row["name"],
-                            "description": row["description"],
-                            "similarity": row["similarity"],
-                        }
-                    )
-                    count += 1
-
-        return results
+        return await db_operations.find_similar_by_embeddings_batch(
+            conn, table_name, query_embeddings, threshold, limit_per_query, batch_size
+        )
 
     async def close(self):
         """Clean up resources."""

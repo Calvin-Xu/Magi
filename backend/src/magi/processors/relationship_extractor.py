@@ -26,6 +26,7 @@ AVAILABLE_MODELS = {
     "gpt-4o-2024-11-20": OpenAIExtractor,
     # Gemini models
     "gemini-2.0-flash": GeminiExtractor,
+    "gemini-2.5-pro-exp-03-25": GeminiExtractor,
     # 2.0 thinking has no json mode
     # "gemini-2.0-flash-thinking-exp": GeminiExtractor,
 }

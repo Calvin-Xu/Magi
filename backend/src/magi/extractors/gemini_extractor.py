@@ -48,6 +48,12 @@ MODEL_LIMITS = {
         input_token_limit=1_048_576,
         vertex_model_id="gemini-1.5-flash-002",  # TODO: 2.0 tokenizer not supported yet
     ),
+    "gemini-2.5-pro-exp-03-25": ModelLimits(
+        rpm=20,
+        tpm=2_000_000,
+        input_token_limit=1_048_576,
+        vertex_model_id="gemini-1.5-pro-002",  # TODO: 2.0 tokenizer not supported yet
+    ),
 }
 
 
