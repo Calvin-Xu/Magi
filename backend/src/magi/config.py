@@ -76,7 +76,7 @@ class FileProcessorConfig:
         default_factory=lambda: int(os.getenv("MAGI_MAX_CONCURRENT_DOWNLOADS", "50"))
     )
     batch_size: int = field(
-        default_factory=lambda: int(os.getenv("MAGI_BATCH_SIZE", "1000"))
+        default_factory=lambda: int(os.getenv("MAGI_BATCH_SIZE", "100"))
     )
     max_retries: int = field(
         default_factory=lambda: int(os.getenv("MAGI_MAX_RETRIES", "3"))

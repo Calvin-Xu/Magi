@@ -122,9 +122,6 @@ class ObjectResolutionProcessor:
         relationships_with_refs = await self.link_relationships_with_references(
             df, entity_hash_to_reference, rel_type_hash_to_reference
         )
-        logger.info(
-            f"Linked references for {relationships_with_refs.count()} relationships"
-        )
 
         # Save relationships to DB
         relationship_ids = await self.save_relationships_to_db(relationships_with_refs)

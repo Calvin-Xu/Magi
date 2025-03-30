@@ -8,6 +8,9 @@ from datetime import datetime
 from typing import AsyncIterator, List
 
 from pydantic import BaseModel, Field
+from magi.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class RelationshipTriple(BaseModel):
@@ -128,20 +131,22 @@ class RelationshipExtractor(ABC):
         """
         chunks = self._chunk_text(text)
 
-        for chunk in chunks:
-            # Rate limit API calls
+        # Process chunks concurrently with bounded parallelism
+        async def process_chunk(chunk):
             async with self._semaphore:
                 try:
-                    relationships = await self._extract_relationships_raw(
+                    return await self._extract_relationships_raw(
                         chunk.text,
                         **kwargs,
                     )
-
                 except Exception as e:
-                    print(f"Error extracting relationships: {str(e)}")
-                    continue
+                    logger.error(f"Error extracting relationships: {str(e)}")
+                    return []
 
-            # Yield relationships from this chunk
+        tasks = [process_chunk(chunk) for chunk in chunks]
+
+        for completed_task in asyncio.as_completed(tasks):
+            relationships = await completed_task
             for relationship in relationships:
                 yield relationship
 

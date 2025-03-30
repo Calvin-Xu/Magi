@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 class RelationshipExtractionService:
     """Service for extracting relationships from document batches."""
 
-    def __init__(self, extractor: RelationshipExtractor, max_concurrent: int = 10):
+    def __init__(self, extractor: RelationshipExtractor, max_concurrent: int = 100):
         """
         Initialize the relationship extraction service.
 
@@ -75,14 +75,29 @@ class RelationshipExtractionService:
         Returns:
             The batch with relationships extracted
         """
-        # Process documents concurrently
-        tasks = [
-            self.extract_relationships_from_document(document)
-            for document in batch.documents
-        ]
+        if not batch.documents:
+            return batch
 
-        # Wait for all tasks to complete
-        processed_documents = await asyncio.gather(*tasks)
+        # Longer documents start processing first
+        docs_by_length = sorted(
+            batch.documents, key=lambda doc: len(doc.content), reverse=True
+        )
+
+        tasks = {}
+        for doc in docs_by_length:
+            task = asyncio.create_task(self.extract_relationships_from_document(doc))
+            tasks[doc.uri] = (doc, task)
+
+        processed_documents = []
+        for completed_task in asyncio.as_completed(
+            [task for _, task in tasks.values()]
+        ):
+            processed_doc = await completed_task
+            processed_documents.append(processed_doc)
+
+            logger.debug(
+                f"Processed {len(processed_documents)}/{len(batch.documents)} documents"
+            )
 
         return DocumentBatch(documents=processed_documents)
 
