@@ -281,106 +281,6 @@ async def find_relationship_type_by_name(
         raise
 
 
-# Memgraph operations
-
-
-async def insert_entity_to_memgraph(
-    entity_id: int,
-    entity_name: str,
-    entity_description: str,
-    from_imported_schema: bool = False,
-) -> None:
-    """
-    Insert an entity into Memgraph.
-
-    Args:
-        entity_id: Entity ID in PostgreSQL
-        entity_name: Entity name
-        entity_description: Entity description
-        from_imported_schema: Whether this entity is from an imported schema
-    """
-    from gqlalchemy import Memgraph
-
-    try:
-        mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
-
-        # Escape quotes in strings for Cypher
-        entity_name_escaped = entity_name.replace("'", "\\'")
-        entity_description_escaped = entity_description.replace("'", "\\'")
-
-        # Create entity node
-        query = f"""
-        MERGE (e:Entity {{id: {entity_id}, name: '{entity_name_escaped}', 
-                         description: '{entity_description_escaped}', 
-                         from_imported_schema: {str(from_imported_schema).lower()}}})
-        """
-
-        mg.execute(query)
-        logger.debug(f"Created/updated entity in Memgraph: {entity_id}, {entity_name}")
-    except Exception as e:
-        logger.error(f"Error inserting entity {entity_id} into Memgraph: {e}")
-        # Continue execution, as this is non-critical
-
-
-async def insert_relationship_to_memgraph(
-    relationship_id: int,
-    from_entity_id: int,
-    relationship_type_id: int,
-    to_entity_id: int,
-    relationship_type_name: str,
-    constraint_condition: Optional[str] = None,
-    reason: Optional[str] = None,
-    is_causal: bool = False,
-    from_imported_schema: bool = False,
-) -> None:
-    """
-    Insert a relationship into Memgraph.
-
-    Args:
-        relationship_id: Relationship ID in PostgreSQL
-        from_entity_id: From entity ID
-        relationship_type_id: Relationship type ID
-        to_entity_id: To entity ID
-        relationship_type_name: Relationship type name
-        constraint_condition: Constraint condition
-        reason: Reason for the relationship
-        is_causal: Whether the relationship is causal
-        from_imported_schema: Whether this relationship is from an imported schema
-    """
-    from gqlalchemy import Memgraph
-
-    try:
-        mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
-
-        # Escape quotes in strings for Cypher
-        relationship_name_escaped = relationship_type_name.replace("'", "\\'")
-        constraint_condition_escaped = (
-            constraint_condition.replace("'", "\\'") if constraint_condition else ""
-        )
-        reason_escaped = reason.replace("'", "\\'") if reason else ""
-
-        # Ensure both entity nodes exist
-        query = f"""
-        MATCH (from:Entity {{id: {from_entity_id}}}), (to:Entity {{id: {to_entity_id}}})
-        MERGE (from)-[r:{relationship_name_escaped} {{
-            id: {relationship_id},
-            relationship_type_id: {relationship_type_id},
-            constraint_condition: '{constraint_condition_escaped}',
-            reason: '{reason_escaped}',
-            is_causal: {str(is_causal).lower()},
-            from_imported_schema: {str(from_imported_schema).lower()}
-        }}]->(to)
-        """
-
-        mg.execute(query)
-        logger.debug(f"Created relationship in Memgraph: {relationship_id}")
-    except Exception as e:
-        logger.error(
-            f"Error inserting relationship {relationship_id} into Memgraph: {e}"
-        )
-        # Continue execution, as this is non-critical
-
-
 async def find_similar_by_embeddings_batch(
     conn: asyncpg.Connection,
     table_name: str,
@@ -467,3 +367,193 @@ async def find_similar_by_embeddings_batch(
                 count += 1
 
     return results
+
+
+# Batch operations
+
+
+async def save_relationships_to_db(
+    conn: asyncpg.Connection,
+    relationships_data: List[Dict[str, Any]],
+) -> List[int]:
+    """
+    Save a batch of relationships to both PostgreSQL and Memgraph.
+
+    Args:
+        conn: PostgreSQL connection
+        relationships_data: List of dictionaries containing relationship data
+            Each dict must have:
+                - from_entity_reference
+                - to_entity_reference
+                - relationship_type_reference
+            And may optionally have:
+                - constraint_condition
+                - reason
+                - is_causal
+                - source_document_uri
+
+    Returns:
+        A list of inserted relationship IDs from PostgreSQL.
+    """
+    from gqlalchemy import Memgraph
+
+    relationship_ids = []
+
+    mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
+
+    # Create caches for resolved entity and relationship type names
+    entity_name_cache = {}
+    rel_type_name_cache = {}
+
+    try:
+        async with conn.transaction():
+            # First, fetch all required entity and relationship type names in bulk
+            entity_refs = set()
+            rel_type_refs = set()
+
+            for row_dict in relationships_data:
+                from_entity_ref = row_dict.get(
+                    Relationship.FROM_ENTITY_REFERENCE_COLUMN
+                )
+                to_entity_ref = row_dict.get(Relationship.TO_ENTITY_REFERENCE_COLUMN)
+                rel_type_ref = row_dict.get(
+                    Relationship.RELATIONSHIP_TYPE_REFERENCE_COLUMN
+                )
+
+                if from_entity_ref:
+                    entity_refs.add(from_entity_ref)
+                if to_entity_ref:
+                    entity_refs.add(to_entity_ref)
+                if rel_type_ref:
+                    rel_type_refs.add(rel_type_ref)
+
+            # Bulk fetch entity names
+            if entity_refs:
+                entity_query = """
+                SELECT id, name FROM entities WHERE id = ANY($1)
+                """
+                entity_rows = await conn.fetch(entity_query, list(entity_refs))
+                for er in entity_rows:
+                    entity_name_cache[er["id"]] = er["name"]
+
+            # Bulk fetch relationship type names
+            if rel_type_refs:
+                rel_type_query = """
+                SELECT id, name FROM relationship_types WHERE id = ANY($1)
+                """
+                rel_type_rows = await conn.fetch(rel_type_query, list(rel_type_refs))
+                for rtr in rel_type_rows:
+                    rel_type_name_cache[rtr["id"]] = rtr["name"]
+
+            logger.info(
+                f"Cached {len(entity_name_cache)} entity names and {len(rel_type_name_cache)} relationship type names"
+            )
+
+            # Now process each relationship
+            for row_dict in relationships_data:
+                from_entity_ref = row_dict.get(
+                    Relationship.FROM_ENTITY_REFERENCE_COLUMN
+                )
+                to_entity_ref = row_dict.get(Relationship.TO_ENTITY_REFERENCE_COLUMN)
+                rel_type_ref = row_dict.get(
+                    Relationship.RELATIONSHIP_TYPE_REFERENCE_COLUMN
+                )
+
+                # If references are missing, we skip
+                if not all([from_entity_ref, to_entity_ref, rel_type_ref]):
+                    logger.warning(
+                        f"Skipping relationship due to missing references: {row_dict}"
+                    )
+                    continue
+
+                # Insert the relationship in PostgreSQL
+                query = """
+                INSERT INTO relationships
+                (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_document_uri, from_imported_schema)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id
+                """
+                relationship_id = await conn.fetchval(
+                    query,
+                    from_entity_ref,
+                    to_entity_ref,
+                    rel_type_ref,
+                    row_dict.get(Relationship.CONSTRAINT_CONDITION_COLUMN),
+                    row_dict.get(Relationship.REASON_COLUMN),
+                    row_dict.get(Relationship.IS_CAUSAL_COLUMN),
+                    row_dict.get(Relationship.SOURCE_DOCUMENT_URI_COLUMN),
+                    row_dict.get(Relationship.FROM_IMPORTED_SCHEMA_COLUMN),
+                )
+                relationship_ids.append(relationship_id)
+                logger.debug(
+                    f"Inserted relationship with ID {relationship_id} in Postgres"
+                )
+
+                # Get resolved entity and relationship type names from cache
+                from_entity_name = entity_name_cache.get(from_entity_ref)
+                to_entity_name = entity_name_cache.get(to_entity_ref)
+                rel_type_name = rel_type_name_cache.get(rel_type_ref)
+
+                if not all([from_entity_name, to_entity_name, rel_type_name]):
+                    logger.warning(
+                        f"Skipping Memgraph update due to missing resolved names: "
+                        f"from={from_entity_ref}/{from_entity_name}, "
+                        f"to={to_entity_ref}/{to_entity_name}, "
+                        f"rel_type={rel_type_ref}/{rel_type_name}"
+                    )
+                    continue
+
+                # Insert into Memgraph
+                try:
+                    # Check or create the "from" entity
+                    check_from = f"""
+                    MATCH (fe:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
+                    RETURN count(fe) AS cnt
+                    """
+                    result_from = mg.execute_and_fetch(check_from)
+                    if next(result_from)["cnt"] == 0:
+                        create_from = f"""
+                        CREATE (e:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
+                        """
+                        mg.execute(create_from)
+
+                    # Check or create the "to" entity
+                    check_to = f"""
+                    MATCH (te:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
+                    RETURN count(te) AS cnt
+                    """
+                    result_to = mg.execute_and_fetch(check_to)
+                    if next(result_to)["cnt"] == 0:
+                        create_to = f"""
+                        CREATE (e:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
+                        """
+                        mg.execute(create_to)
+
+                    # Create the relationship
+                    import re
+
+                    valid_rel_type = re.sub(r"[^a-zA-Z0-9_]", "_", rel_type_name)
+                    valid_rel_type = valid_rel_type.upper()
+
+                    create_rel = f"""
+                    MATCH (f:Entity {{pg_id: {from_entity_ref}}})
+                    MATCH (t:Entity {{pg_id: {to_entity_ref}}})
+                    CREATE (f)-[r:{valid_rel_type} {{pg_id: {relationship_id}}}]->(t)
+                    RETURN r
+                    """
+                    mg.execute(create_rel)
+
+                    logger.debug(
+                        f"Created Memgraph relationship: "
+                        f"{from_entity_name} -[{valid_rel_type}]-> {to_entity_name}"
+                    )
+                except Exception as me:
+                    logger.exception(f"Error saving to Memgraph: {str(me)}")
+
+            logger.info(
+                f"Successfully saved {len(relationship_ids)} total relationships to DB"
+            )
+    except Exception as e:
+        logger.exception(f"Error in save_relationships_to_db: {str(e)}")
+
+    return relationship_ids

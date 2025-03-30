@@ -11,12 +11,20 @@ class Entity:
     hash_key: Optional[str] = None
     from_imported_schema: bool = False
 
-    # Define column names as class variables
+    # Define DataFrame column names as class variables
     NAME_COLUMN: str = "name"
     DESCRIPTION_COLUMN: str = "description"
     EMBEDDING_COLUMN: str = "embedding"
     POSTGRES_REFERENCE_COLUMN: str = "postgres_reference"
     FROM_IMPORTED_SCHEMA_COLUMN: str = "from_imported_schema"
+
+    def __hash__(self):
+        return hash((self.name, self.description))
+
+    def __eq__(self, other):
+        if not isinstance(other, Entity):
+            return False
+        return self.name == other.name and self.description == other.description
 
 
 @dataclass
@@ -28,7 +36,7 @@ class RelationshipType:
     hash_key: Optional[str] = None
     from_imported_schema: bool = False
 
-    # Define column names as class variables
+    # Define DataFrame column names as class variables
     NAME_COLUMN: str = "name"
     DESCRIPTION_COLUMN: str = "description"
     EMBEDDING_COLUMN: str = "embedding"
@@ -48,7 +56,7 @@ class Relationship:
     source_document_uri: Optional[str] = None
     from_imported_schema: bool = False
 
-    # Define column names as class variables
+    # Define DataFrame column names as class variables
     FROM_ENTITY_COLUMN: str = "from_entity"
     TO_ENTITY_COLUMN: str = "to_entity"
     RELATIONSHIP_TYPE_COLUMN: str = "relationship_type"

@@ -468,181 +468,21 @@ class ObjectResolutionProcessor:
         Returns:
             A list of inserted relationship IDs from PostgreSQL.
         """
-        from gqlalchemy import Memgraph
-
-        from magi.config import MEMGRAPH_CONFIG
-
+        from src.magi.services.db_operations import save_relationships_to_db
+        
         row_count = relationships_df.count()
         logger.info(f"Saving {row_count} relationships to the database")
-
+        
         # Collect to driver for insertion
         all_rows = relationships_df.collect()
-        relationship_ids = []
-
-        mg = Memgraph(host=MEMGRAPH_CONFIG.host, port=MEMGRAPH_CONFIG.port)
-
-        # Create caches for resolved entity and relationship type names
-        entity_name_cache = {}
-        rel_type_name_cache = {}
-
-        try:
-            async with self.conn.transaction():
-                # First, fetch all required entity and relationship type names in bulk
-                entity_refs = set()
-                rel_type_refs = set()
-
-                for row in all_rows:
-                    row_dict = row.asDict()
-                    from_entity_ref = row_dict.get(
-                        Relationship.FROM_ENTITY_REFERENCE_COLUMN
-                    )
-                    to_entity_ref = row_dict.get(
-                        Relationship.TO_ENTITY_REFERENCE_COLUMN
-                    )
-                    rel_type_ref = row_dict.get(
-                        Relationship.RELATIONSHIP_TYPE_REFERENCE_COLUMN
-                    )
-
-                    if from_entity_ref:
-                        entity_refs.add(from_entity_ref)
-                    if to_entity_ref:
-                        entity_refs.add(to_entity_ref)
-                    if rel_type_ref:
-                        rel_type_refs.add(rel_type_ref)
-
-                # Bulk fetch entity names
-                if entity_refs:
-                    entity_query = """
-                    SELECT id, name FROM entities WHERE id = ANY($1)
-                    """
-                    entity_rows = await self.conn.fetch(entity_query, list(entity_refs))
-                    for er in entity_rows:
-                        entity_name_cache[er["id"]] = er["name"]
-
-                # Bulk fetch relationship type names
-                if rel_type_refs:
-                    rel_type_query = """
-                    SELECT id, name FROM relationship_types WHERE id = ANY($1)
-                    """
-                    rel_type_rows = await self.conn.fetch(
-                        rel_type_query, list(rel_type_refs)
-                    )
-                    for rtr in rel_type_rows:
-                        rel_type_name_cache[rtr["id"]] = rtr["name"]
-
-                logger.info(
-                    f"Cached {len(entity_name_cache)} entity names and {len(rel_type_name_cache)} relationship type names"
-                )
-
-                # Now process each relationship
-                for row in all_rows:
-                    # Convert the Row to a dict so we can do row_dict.get(...)
-                    row_dict = row.asDict()
-
-                    from_entity_ref = row_dict.get(
-                        Relationship.FROM_ENTITY_REFERENCE_COLUMN
-                    )
-                    to_entity_ref = row_dict.get(
-                        Relationship.TO_ENTITY_REFERENCE_COLUMN
-                    )
-                    rel_type_ref = row_dict.get(
-                        Relationship.RELATIONSHIP_TYPE_REFERENCE_COLUMN
-                    )
-
-                    # If references are missing, we skip
-                    if not all([from_entity_ref, to_entity_ref, rel_type_ref]):
-                        logger.warning(
-                            f"Skipping relationship due to missing references: {row_dict}"
-                        )
-                        continue
-
-                    # Insert the relationship in PostgreSQL
-                    query = """
-                    INSERT INTO relationships
-                    (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_document_uri)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    RETURNING id
-                    """
-                    relationship_id = await self.conn.fetchval(
-                        query,
-                        from_entity_ref,
-                        to_entity_ref,
-                        rel_type_ref,
-                        row_dict.get(Relationship.CONSTRAINT_CONDITION_COLUMN),
-                        row_dict.get(Relationship.REASON_COLUMN),
-                        row_dict.get(Relationship.IS_CAUSAL_COLUMN),
-                        row_dict.get(Relationship.SOURCE_DOCUMENT_URI_COLUMN),
-                    )
-                    relationship_ids.append(relationship_id)
-                    logger.debug(
-                        f"Inserted relationship with ID {relationship_id} in Postgres"
-                    )
-
-                    # Get resolved entity and relationship type names from cache
-                    from_entity_name = entity_name_cache.get(from_entity_ref)
-                    to_entity_name = entity_name_cache.get(to_entity_ref)
-                    rel_type_name = rel_type_name_cache.get(rel_type_ref)
-
-                    if not all([from_entity_name, to_entity_name, rel_type_name]):
-                        logger.warning(
-                            f"Skipping Memgraph update due to missing resolved names: "
-                            f"from={from_entity_ref}/{from_entity_name}, "
-                            f"to={to_entity_ref}/{to_entity_name}, "
-                            f"rel_type={rel_type_ref}/{rel_type_name}"
-                        )
-                        continue
-
-                    # Memgraph: create the nodes and relationship
-                    try:
-                        # Check or create the "from" entity
-                        check_from = f"""
-                        MATCH (fe:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
-                        RETURN count(fe) AS cnt
-                        """
-                        result_from = mg.execute_and_fetch(check_from)
-                        if next(result_from)["cnt"] == 0:
-                            create_from = f"""
-                            CREATE (e:Entity {{pg_id: {from_entity_ref}, name: "{from_entity_name}"}})
-                            """
-                            mg.execute(create_from)
-
-                        # Check or create the "to" entity
-                        check_to = f"""
-                        MATCH (te:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
-                        RETURN count(te) AS cnt
-                        """
-                        result_to = mg.execute_and_fetch(check_to)
-                        if next(result_to)["cnt"] == 0:
-                            create_to = f"""
-                            CREATE (e:Entity {{pg_id: {to_entity_ref}, name: "{to_entity_name}"}})
-                            """
-                            mg.execute(create_to)
-
-                        # Create the relationship
-                        import re
-
-                        valid_rel_type = re.sub(r"[^a-zA-Z0-9_]", "_", rel_type_name)
-                        valid_rel_type = valid_rel_type.upper()
-
-                        create_rel = f"""
-                        MATCH (f:Entity {{pg_id: {from_entity_ref}}})
-                        MATCH (t:Entity {{pg_id: {to_entity_ref}}})
-                        CREATE (f)-[r:{valid_rel_type} {{pg_id: {relationship_id}}}]->(t)
-                        RETURN r
-                        """
-                        mg.execute(create_rel)
-
-                        logger.debug(
-                            f"Created Memgraph relationship: "
-                            f"{from_entity_name} -[{valid_rel_type}]-> {to_entity_name}"
-                        )
-                    except Exception as me:
-                        logger.exception(f"Error saving to Memgraph: {str(me)}")
-
-            logger.info(
-                f"Successfully saved {len(relationship_ids)} total relationships to DB"
-            )
-        except Exception as e:
-            logger.exception(f"Error in save_relationships_to_db: {str(e)}")
-
+        
+        # Convert Spark Rows to dictionaries for the db_operations function
+        relationships_data = [row.asDict() for row in all_rows]
+        
+        # Call the centralized function to save relationships
+        relationship_ids = await save_relationships_to_db(
+            conn=self.conn, 
+            relationships_data=relationships_data
+        )
+        
         return relationship_ids
