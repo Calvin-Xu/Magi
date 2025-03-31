@@ -27,6 +27,7 @@ dependencies = [
     "numpy>=1.26.4",
     "networkx>=2.8.8",
     "fhir-resources>=8.0.0",
+    "markitdown[all]>=0.0.2",
 ]
 
 [project.optional-dependencies]

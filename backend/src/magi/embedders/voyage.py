@@ -54,6 +54,7 @@ class VoyageEmbeddingProvider(EmbeddingProvider):
         embed_prompt: Optional[str] = None,
         current_max_batch_size: Optional[int] = None,
     ) -> List[List[float]]:
+        """Generate embeddings for a list of texts with batching, chunking, and rate limiting."""
         if query_prompt and embed_prompt:
             raise ValueError(
                 "Both query_prompt and embed_prompt cannot be provided simultaneously."
