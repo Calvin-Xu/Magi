@@ -17,7 +17,7 @@ from .aws import AWSCredentials, create_aws_client
 from .models import Entity, RelationshipType
 from .relationship_extraction import RelationshipExtractionService
 from .s3 import S3DocumentReader
-from .schemas import DocumentBatch
+from .documents import DocumentBatch
 
 # Create a logger for this module
 logger = get_logger(__name__)

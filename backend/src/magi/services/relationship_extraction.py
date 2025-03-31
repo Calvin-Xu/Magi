@@ -5,7 +5,7 @@ import json
 from typing import AsyncIterator
 
 from magi.extractors.base import RelationshipExtractor
-from magi.services.schemas import DocumentBatch, TextDocument
+from magi.services.documents import DocumentBatch, TextDocument
 from magi.utils.logging import get_logger
 
 # Initialize logger

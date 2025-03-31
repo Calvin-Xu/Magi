@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
+from pyspark.sql.types import BooleanType, StringType, StructField, StructType
 
 
 @dataclass
@@ -55,6 +56,7 @@ class Relationship:
     is_causal: bool = False
     source_document_uri: Optional[str] = None
     from_imported_schema: bool = False
+    confidence: Optional[float] = None
 
     # Define DataFrame column names as class variables
     FROM_ENTITY_COLUMN: str = "from_entity"
@@ -74,3 +76,21 @@ class Relationship:
     TO_ENTITY_REFERENCE_COLUMN: str = "to_entity_reference"
     RELATIONSHIP_TYPE_REFERENCE_COLUMN: str = "relationship_type_reference"
     FROM_IMPORTED_SCHEMA_COLUMN: str = "from_imported_schema"
+    CONFIDENCE_COLUMN: str = "confidence"
+
+
+# Schema for relationship triples in Spark
+RELATIONSHIP_SCHEMA = StructType(
+    [
+        StructField("from_entity", StringType(), False),
+        StructField("from_entity_description", StringType(), False),
+        StructField("to_entity", StringType(), False),
+        StructField("to_entity_description", StringType(), False),
+        StructField("relationship_type", StringType(), False),
+        StructField("relationship_description", StringType(), False),
+        StructField("constraint_condition", StringType(), True),
+        StructField("reason", StringType(), False),
+        StructField("is_causal", BooleanType(), False),
+        StructField("source_document_uri", StringType(), True),
+    ]
+)

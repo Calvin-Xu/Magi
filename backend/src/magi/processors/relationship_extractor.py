@@ -10,8 +10,7 @@ from pyspark.storagelevel import StorageLevel
 
 from magi.extractors.gemini_extractor import GeminiExtractor
 from magi.extractors.openai_extractor import OpenAIExtractor
-from magi.services.models import Relationship
-from magi.services.schemas import RELATIONSHIP_SCHEMA
+from magi.services.models import Relationship, RELATIONSHIP_SCHEMA
 from magi.utils.logging import get_logger
 
 from .base import DocumentProcessor

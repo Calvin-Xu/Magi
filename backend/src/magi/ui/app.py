@@ -10,8 +10,8 @@ from pyspark.sql import SparkSession
 
 from magi.config import POSTGRES_CONFIG
 from magi.processors.relationship_extractor import AVAILABLE_MODELS, DEFAULT_MODEL
-from magi.schema_builder import OpenAISchemaBuilder
-from magi.schema_builder.models import RelationalDatasetSchema
+from magi.schema_builders import OpenAISchemaBuilder
+from magi.schema_builders.models import RelationalDatasetSchema
 from magi.services.aws import AWSCredentials
 from magi.services.checks import run_health_checks
 from magi.embedders.voyage import VoyageEmbeddingProvider
@@ -117,7 +117,12 @@ def create_gradio_app() -> gr.Blocks:
                     with gr.Column():
                         schema_model_dropdown = gr.Dropdown(
                             label="Model",
-                            choices=["gpt-4o-2024-11-20", "o3-mini-2025-01-31"],
+                            choices=[
+                                "gpt-4o-2024-11-20",
+                                "o3-mini-2025-01-31",
+                                "o1-2024-12-17",
+                                "o1-pro-2025-03-19",
+                            ],
                             value="gpt-4o-2024-11-20",
                         )
                         build_schema_btn = gr.Button("Build Schema", variant="primary")

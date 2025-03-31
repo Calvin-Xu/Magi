@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError
 
 from magi.config import FILE_PROCESSOR_CONFIG
 from magi.services.aws import AWSCredentials, create_aws_client
-from magi.services.schemas import (
+from magi.services.documents import (
     DocumentBatch,
     TextDocument,
     UnsupportedFileTypeError,
