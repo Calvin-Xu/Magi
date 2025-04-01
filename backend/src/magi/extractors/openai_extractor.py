@@ -7,8 +7,8 @@ from magi.config import OPENAI_CONFIG
 from magi.extractors.base import (
     ExtractionMetrics,
     RelationshipExtractor,
-    RelationshipTriple,
 )
+from magi.services.models import ExtractedRelationship
 from magi.services.openai import (
     call_openai_with_backoff,
     count_tokens,
@@ -119,7 +119,7 @@ class OpenAIExtractor(RelationshipExtractor):
         self,
         text: str,
         **kwargs,
-    ) -> List[RelationshipTriple]:
+    ) -> List[ExtractedRelationship]:
         """Extract relationships from a single chunk of text."""
         if not text.strip():
             logger.warning("Empty text chunk, skipping extraction")
@@ -219,11 +219,11 @@ Provide comprehensive, unique descriptions for each entity and relationship type
                 )
             )
 
-            # Convert RelationshipItem -> RelationshipTriple
-            relationships_out: List[RelationshipTriple] = []
+            # Convert RelationshipItem -> ExtractedRelationship
+            relationships_out: List[ExtractedRelationship] = []
             for item in extracted_list.relationships:
                 relationships_out.append(
-                    RelationshipTriple(
+                    ExtractedRelationship(
                         from_entity=item.subject,
                         from_entity_description=item.subject_description,
                         to_entity=item.object,

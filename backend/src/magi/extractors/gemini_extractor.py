@@ -12,11 +12,11 @@ from vertexai.preview import tokenization
 from magi.config import GEMINI_CONFIG
 from magi.services.rate_limiter import RateLimit, rate_limiter
 from magi.utils.logging import get_logger
+from magi.services.models import ExtractedRelationship
 
 from .base import (
     ExtractionMetrics,
     RelationshipExtractor,
-    RelationshipTriple,
 )
 from .prompts import RELATIONSHIP_EXTRACTION_PROMPT
 
@@ -230,7 +230,7 @@ class GeminiExtractor(RelationshipExtractor):
         self,
         text: str,
         **kwargs,
-    ) -> List[RelationshipTriple]:
+    ) -> List[ExtractedRelationship]:
         """Extract relationships from a single chunk of text."""
         start_time = datetime.now()
         text_preview = text[:100] + "..." if len(text) > 100 else text
@@ -281,7 +281,7 @@ class GeminiExtractor(RelationshipExtractor):
                 )
             )
 
-            # Parse response into RelationshipTriples
+            # Parse response into ExtractedRelationship
             relationships = []
             relationship_count = (
                 len(response.parsed.relationships) if response.parsed else 0
@@ -300,7 +300,7 @@ class GeminiExtractor(RelationshipExtractor):
                 )
 
                 relationships.append(
-                    RelationshipTriple(
+                    ExtractedRelationship(
                         from_entity=rel.subject,
                         from_entity_description=rel.subject_description,
                         to_entity=rel.object,

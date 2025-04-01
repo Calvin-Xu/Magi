@@ -7,56 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import AsyncIterator, List
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+from magi.services.models import ExtractedRelationship
 from magi.utils import get_logger
 
 logger = get_logger(__name__)
-
-
-class RelationshipTriple(BaseModel):
-    """A relationship triple extracted from text."""
-
-    from_entity: str = Field(..., min_length=1)
-    from_entity_description: str = Field(
-        ...,
-        description="A globally unique, disambiguating description of the source entity",
-    )
-    to_entity: str = Field(..., min_length=1)
-    to_entity_description: str = Field(
-        ...,
-        description="A globally unique, disambiguating description of the target entity",
-    )
-    relationship_type: str = Field(..., min_length=1)
-    relationship_description: str = Field(
-        ...,
-        description="A globally unique identifying description for this relationship type",
-    )
-    constraint_condition: str = Field(
-        "", description="Conditions under which the relationship holds"
-    )
-    reason: str = Field(..., min_length=1)
-    is_causal: bool = Field(
-        False, description="Whether the relationship represents a causal connection"
-    )
-    source_document: str = Field(
-        "", description="The document from which this relationship was extracted"
-    )
-
-    def __hash__(self) -> int:
-        """Make relationship triples hashable for deduplication."""
-        return hash(
-            (
-                self.from_entity,
-                self.from_entity_description,
-                self.to_entity,
-                self.to_entity_description,
-                self.relationship_type,
-                self.relationship_description,
-                self.constraint_condition,
-                self.reason,
-                self.is_causal,
-            )
-        )
 
 
 @dataclass
@@ -69,14 +24,22 @@ class ExtractionMetrics:
     timestamp: datetime = Field(default_factory=datetime.now())
 
 
-class TextChunk(BaseModel):
+class TextChunk:
     """A chunk of text with metadata."""
 
-    text: str
-    start_char: int  # Position in original text
-    end_char: int
-    is_paragraph_boundary: bool = False
-    is_sentence_boundary: bool = False
+    def __init__(
+        self,
+        text: str,
+        start_char: int,  # Position in original text
+        end_char: int,
+        is_paragraph_boundary: bool = False,
+        is_sentence_boundary: bool = False,
+    ):
+        self.text = text
+        self.start_char = start_char
+        self.end_char = end_char
+        self.is_paragraph_boundary = is_paragraph_boundary
+        self.is_sentence_boundary = is_sentence_boundary
 
 
 class RelationshipExtractor(ABC):
@@ -110,7 +73,7 @@ class RelationshipExtractor(ABC):
         self,
         text: str,
         **kwargs,
-    ) -> List[RelationshipTriple]:
+    ) -> List[ExtractedRelationship]:
         """Extract relationships from a single chunk of text."""
         pass
 
@@ -118,7 +81,7 @@ class RelationshipExtractor(ABC):
         self,
         text: str,
         **kwargs,
-    ) -> AsyncIterator[RelationshipTriple]:
+    ) -> AsyncIterator[ExtractedRelationship]:
         """
         Extract relationships from text, handling chunking and rate limiting.
 

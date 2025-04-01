@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from typing import AsyncIterator
+from typing import AsyncIterator, List, Dict, Any
 
 from magi.extractors.base import RelationshipExtractor
 from magi.services.documents import DocumentBatch, TextDocument
@@ -21,11 +21,12 @@ class RelationshipExtractionService:
 
         Args:
             extractor: The relationship extractor to use
+            max_concurrent: Maximum number of concurrent document processes
         """
         self.extractor = extractor
         self.semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def extract_relationships_from_text(self, text: str) -> list[dict]:
+    async def extract_relationships_from_text(self, text: str) -> List[Dict[str, Any]]:
         """
         Extract relationships from text using the provided extractor.
 
