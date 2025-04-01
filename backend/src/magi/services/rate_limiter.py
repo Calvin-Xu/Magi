@@ -386,3 +386,12 @@ O3_MINI_RATE_LIMIT = RateLimit(
     num_shards=10,
     max_concurrent=10,
 )
+
+PERPLEXITY_RATE_LIMIT = RateLimit(
+    name="perplexity",  # tier 1
+    rpm=150,
+    tpm=150_000,
+    window_size=60,
+    num_shards=10,
+    max_concurrent=10,
+)

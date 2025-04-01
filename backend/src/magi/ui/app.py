@@ -9,14 +9,17 @@ import pandas as pd
 from pyspark.sql import SparkSession
 
 from magi.config import POSTGRES_CONFIG
-from magi.processors.relationship_extractor import AVAILABLE_MODELS, DEFAULT_MODEL
+from magi.processors.relationship_extraction_processor import (
+    AVAILABLE_MODELS,
+    DEFAULT_MODEL,
+)
 from magi.schema_builders import OpenAISchemaBuilder
 from magi.schema_builders.models import RelationalDatasetSchema
 from magi.services.aws import AWSCredentials
 from magi.services.checks import run_health_checks
 from magi.embedders.voyage import VoyageEmbeddingProvider
 from magi.services.graph_export import export_graph as export_graph_func
-from magi.services.pipeline import Pipeline
+from magi.services.pipeline import DocumentPipeline, GraphAugmentationPipeline
 from magi.services.s3 import list_s3_objects
 from magi.ui.formatters import all_services_ok, format_status_markdown
 from magi.utils import disable_logging, get_logger, set_global_log_level
@@ -144,28 +147,53 @@ def create_gradio_app() -> gr.Blocks:
                     )
 
                     # Dataset URI input field
-                    dataset_uri = gr.Textbox(
+                    schema_uri = gr.Textbox(
                         label="Dataset URI",
                         placeholder="Enter the source URI for this dataset (e.g., https://doi.org/10.13026/07hj-2a80)",
                         value="",
                     )
-
-                    # Save schema to database button
                     save_schema_btn = gr.Button(
-                        "Embed and Save Schema", variant="primary"
+                        "Save Schema to Database", variant="primary"
                     )
-                    save_schema_output = gr.Markdown("")
+                    schema_save_output = gr.Markdown("")
 
             # Chat-like interface on the right
             with gr.Column(scale=2):
-                chat_interface = gr.Chatbot(label="Schema Assistant", height=500)
+                schema_chat = gr.Chatbot(
+                    label="Schema Assistant", height=500, type="messages"
+                )
                 with gr.Row():
-                    user_prompt = gr.Textbox(
+                    schema_user_prompt = gr.Textbox(
                         label="Describe your dataset",
                         placeholder="E.g., This dataset contains information about movies and actors...",
                         lines=3,
                     )
-                    # clear_chat_btn = gr.Button("Clear", variant="secondary")
+                    clear_chat_btn = gr.Button("Clear", variant="secondary")
+
+        gr.Markdown("## Graph Augmentation")
+        with gr.Row():
+            augmentation_model = gr.Dropdown(
+                label="Augmentation Model",
+                choices=[
+                    "sonar",
+                    "sonar-pro",
+                    "sonar-reasoning-pro",
+                    "sonar-deep-research",
+                ],
+                value="sonar-pro",
+            )
+            user_instruction = gr.Textbox(
+                label="Research Instructions (Optional)",
+                placeholder="E.g., Focus on relationships in the finance domain",
+                lines=2,
+            )
+            augment_graph_btn = gr.Button("Augment Graph", variant="primary")
+
+        augmentation_output = gr.Markdown("")
+        augmented_relationships_df = gr.Dataframe(
+            label="Augmented Relationships",
+            visible=False,
+        )
 
         # Database Exploration Section
         gr.Markdown("## Database Exploration")
@@ -191,7 +219,7 @@ def create_gradio_app() -> gr.Blocks:
                 value="GraphML",
                 info="Select the format to export the graph",
             )
-            include_embeddings = gr.Checkbox(
+            export_include_properties = gr.Checkbox(
                 label="Include Embeddings",
                 value=False,
                 info="Include embedding vectors in the export (increases file size)",
@@ -256,7 +284,7 @@ def create_gradio_app() -> gr.Blocks:
                     rt.name || ' [' || rt.id || ']' AS relationship_type, 
                     e_to.name || ' [' || e_to.id || ']' AS to_entity, 
                     r.reason, 
-                    r.source_document_uri
+                    r.source_uri
                 FROM relationships r
                 JOIN entities e_from ON r.from_entity = e_from.id
                 JOIN entities e_to ON r.to_entity = e_to.id
@@ -281,7 +309,7 @@ def create_gradio_app() -> gr.Blocks:
                 "relationship_type",
                 "to_entity",
                 "reason",
-                "source_document_uri",
+                "source_uri",
             ]
 
             await conn.close()
@@ -331,7 +359,9 @@ def create_gradio_app() -> gr.Blocks:
                 credentials = (
                     AWSCredentials(key_id, secret) if key_id or secret else None
                 )
-                pipeline = Pipeline(spark, conn, model=model, credentials=credentials)
+                pipeline = DocumentPipeline(
+                    spark, conn, model=model, credentials=credentials
+                )
 
                 total_documents = 0
                 first_df = None
@@ -519,10 +549,10 @@ def create_gradio_app() -> gr.Blocks:
                     # Update chat with status
                     chat_history = []
                     chat_history.append(
-                        [
-                            None,
-                            f"Analyzing {len(dataset_paths)} dataset files with model: {model}...",
-                        ]
+                        {
+                            "role": "assistant",
+                            "content": f"Analyzing {len(dataset_paths)} dataset files with model: {model}...",
+                        }
                     )
 
                     # Extract schema
@@ -536,7 +566,10 @@ def create_gradio_app() -> gr.Blocks:
 
                     if not schema:
                         chat_history.append(
-                            [None, "Failed to extract schema. Please try again."]
+                            {
+                                "role": "assistant",
+                                "content": "Failed to extract schema. Please try again.",
+                            }
                         )
                         return [], pd.DataFrame(), pd.DataFrame(), chat_history
 
@@ -576,11 +609,11 @@ def create_gradio_app() -> gr.Blocks:
 
                     # Update chat with success message
                     chat_history.append(
-                        [
-                            None,
-                            f"Successfully extracted schema with {len(schema.tables)} tables and "
+                        {
+                            "role": "assistant",
+                            "content": f"Successfully extracted schema with {len(schema.tables)} tables and "
                             f"{sum(len(table.properties) for table in schema.tables.values())} properties.",
-                        ]
+                        }
                     )
 
                     # Store the schema for later use
@@ -593,11 +626,11 @@ def create_gradio_app() -> gr.Blocks:
                         [],
                         pd.DataFrame(),
                         pd.DataFrame(),
-                        [[None, f"Error: {str(e)}"]],
+                        [{"role": "assistant", "content": f"Error: {str(e)}"}],
                     )
 
         async def save_schema_to_db(
-            source_document_uri: str, schema: RelationalDatasetSchema
+            source_uri: str, schema: RelationalDatasetSchema
         ) -> str:
             """Save the extracted schema to the database."""
             if not schema:
@@ -619,7 +652,7 @@ def create_gradio_app() -> gr.Blocks:
                 # Create the schema graph
                 schema_builder = OpenAISchemaBuilder()
                 result = await schema_builder.create_schema_graph(
-                    source_document_uri, schema, conn, embedding_provider
+                    source_uri, schema, conn, embedding_provider
                 )
 
                 # Clean up
@@ -644,6 +677,131 @@ def create_gradio_app() -> gr.Blocks:
         async def clear_chat() -> List[List[Any]]:
             """Clear the chat history."""
             return []
+
+        async def augment_graph(
+            model: str, instruction: Optional[str] = None
+        ) -> Tuple[str, pd.DataFrame]:
+            """
+            Augment the graph using the GraphAugmentationPipeline.
+
+            Args:
+                model: The model to use for augmentation
+                instruction: Optional user instructions for research
+
+            Returns:
+                A tuple containing (status message, DataFrame of relationships)
+            """
+            try:
+                # Connect to the database
+                conn = await asyncpg.connect(
+                    host=POSTGRES_CONFIG.host,
+                    port=POSTGRES_CONFIG.port,
+                    user=POSTGRES_CONFIG.user,
+                    password=POSTGRES_CONFIG.password,
+                    database=POSTGRES_CONFIG.database,
+                )
+
+                # Initialize Spark if needed
+                spark = (
+                    SparkSession.builder.appName("magi")
+                    .master("local[*]")
+                    .getOrCreate()
+                )
+
+                # Initialize the embedding provider
+                embedding_provider = VoyageEmbeddingProvider()
+
+                # Initialize the augmentation pipeline
+                pipeline = GraphAugmentationPipeline(
+                    spark=spark,
+                    conn=conn,
+                    log_level=logging.INFO,
+                )
+
+                # Augment the graph
+                logger.info(
+                    f"Augmenting graph with model: {model} and user instruction: {instruction}"
+                )
+                result = await pipeline.augment_graph(user_instruction=instruction)
+
+                # Get the DataFrame from the result
+                relationships_df = result["relationships_df"]
+
+                # Convert Spark DataFrame to pandas for display
+                if relationships_df.count() > 0:
+                    logger.info(
+                        f"Converting relationship DataFrame with schema: {relationships_df.schema}"
+                    )
+                    row_count = relationships_df.count()
+                    logger.info(f"DataFrame has {row_count} rows")
+
+                    # Try to limit and convert to pandas
+                    try:
+                        limited_df = relationships_df.limit(MAX_ROWS_DISPLAY)
+                        logger.info(f"Limited to {MAX_ROWS_DISPLAY} rows")
+                        pdf = limited_df.toPandas()
+                        logger.info(
+                            f"Converted to pandas DataFrame with shape: {pdf.shape}"
+                        )
+
+                        # Log column names to verify
+                        logger.info(f"Pandas DataFrame columns: {pdf.columns.tolist()}")
+                    except Exception as e:
+                        logger.exception(
+                            f"Error converting Spark DataFrame to pandas: {e}"
+                        )
+                        pdf = pd.DataFrame(
+                            {"error": [f"Error converting data: {str(e)}"]}
+                        )
+
+                    # Create a readable summary of the results
+                    summary = (
+                        f"✅ Graph augmentation complete!\n\n"
+                        f"• Found {result['relationships_found']} potential new relationships\n"
+                        f"• Processed and saved {result['relationships_processed']} relationships to the database\n"
+                        f"• Context length: {result['context_length']} characters\n"
+                    )
+
+                    if "summary" in result and result["summary"]:
+                        summary += f"\n\n**Research Summary**\n{result['summary']}"
+
+                    return summary, pdf
+                else:
+                    return (
+                        "No relationships were found during augmentation.",
+                        pd.DataFrame(),
+                    )
+
+            except Exception as e:
+                logger.exception(f"Error augmenting graph: {str(e)}")
+                return f"❌ Error augmenting graph: {str(e)}", pd.DataFrame()
+            finally:
+                # Clean up
+                if "conn" in locals():
+                    await conn.close()
+
+        async def update_augmented_relationships(
+            status: str, relationships_df: pd.DataFrame
+        ) -> pd.DataFrame:
+            """Update the augmented relationships DataFrame."""
+            logger.info(
+                f"Updating augmented relationships display with DataFrame shape: {relationships_df.shape if not relationships_df.empty else '(empty)'}"
+            )
+
+            # Force visibility update regardless of content
+            augmented_relationships_df.visible = True
+
+            if not relationships_df.empty:
+                # Set the value only if we have data
+                augmented_relationships_df.value = relationships_df
+                logger.info(
+                    f"Updated augmented_relationships_df with data: visible={augmented_relationships_df.visible}"
+                )
+            else:
+                logger.warning("No relationships to display")
+
+            # Return for chaining
+            return relationships_df
 
         # Create a session state to store the current schema
         current_schema = gr.State(value=None)
@@ -697,22 +855,46 @@ def create_gradio_app() -> gr.Blocks:
         # Connect UI elements to functions
         build_schema_btn.click(
             fn=build_schema,
-            inputs=[dataset_files, support_docs, user_prompt, schema_model_dropdown],
+            inputs=[
+                dataset_files,
+                support_docs,
+                schema_user_prompt,
+                schema_model_dropdown,
+            ],
             outputs=[
                 current_schema,
                 schema_tables_df,
                 schema_properties_df,
-                chat_interface,
+                schema_chat,
             ],
+        )
+
+        clear_chat_btn.click(
+            fn=clear_chat,
+            outputs=[schema_chat],
         )
 
         save_schema_btn.click(
             fn=save_schema_to_db,
-            inputs=[dataset_uri, current_schema],
-            outputs=[save_schema_output],
+            inputs=[schema_uri, current_schema],
+            outputs=[schema_save_output],
         )
 
-        # clear_chat_btn.click(fn=clear_chat, inputs=[], outputs=[chat_interface])
+        export_graph_btn.click(
+            fn=export_graph,
+            inputs=[export_format, export_include_properties],
+            outputs=[export_graph_output, export_file],
+        )
+
+        augment_graph_btn.click(
+            fn=augment_graph,
+            inputs=[augmentation_model, user_instruction],
+            outputs=[augmentation_output, augmented_relationships_df],
+        ).then(
+            fn=update_augmented_relationships,
+            inputs=[augmentation_output, augmented_relationships_df],
+            outputs=[augmented_relationships_df],
+        )
 
         # Load data when UI loads
         async def load_initial_data() -> Tuple[
@@ -731,12 +913,6 @@ def create_gradio_app() -> gr.Blocks:
                 relationship_types_df,
                 relationships_df,
             ],
-        )
-
-        export_graph_btn.click(
-            fn=export_graph,
-            inputs=[export_format, include_embeddings],
-            outputs=[export_graph_output, export_file],
         )
 
     return ui

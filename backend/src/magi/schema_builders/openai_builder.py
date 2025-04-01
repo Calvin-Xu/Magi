@@ -268,7 +268,7 @@ class OpenAISchemaBuilder(SchemaBuilder):
 
     async def create_schema_graph(
         self,
-        source_document_uri: str,
+        source_uri: str,
         schema: RelationalDatasetSchema,
         conn: Any,
         embedding_provider: VoyageEmbeddingProvider,
@@ -379,7 +379,7 @@ class OpenAISchemaBuilder(SchemaBuilder):
                             "relationship_type_reference": has_property_id,
                             "from_imported_schema": True,
                             "is_causal": False,
-                            "source_document_uri": source_document_uri,
+                            "source_uri": source_uri,
                         }
                     )
 
@@ -404,7 +404,7 @@ class OpenAISchemaBuilder(SchemaBuilder):
                                     "relationship_type_reference": references_id,
                                     "from_imported_schema": True,
                                     "is_causal": False,
-                                    "source_document_uri": source_document_uri,
+                                    "source_uri": source_uri,
                                 }
                             )
                             references_count += 1

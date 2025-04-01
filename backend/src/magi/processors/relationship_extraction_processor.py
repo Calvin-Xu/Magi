@@ -35,7 +35,7 @@ DEFAULT_MODEL = "o3-mini-2025-01-31"
 
 
 @dataclass
-class RelationshipExtractorProcessor(DocumentProcessor):
+class RelationshipExtractionProcessor(DocumentProcessor):
     """Processes documents with pre-extracted relationships."""
 
     model: str = DEFAULT_MODEL
@@ -65,14 +65,25 @@ class RelationshipExtractorProcessor(DocumentProcessor):
         # Ensure the parsing is triggered
         await asyncio.to_thread(df_with_relationships.count)
 
-        # Explode the array of relationships into separate rows
-        exploded_df = df_with_relationships.select(
-            F.col("uri").alias("source_document_uri"),
-            F.explode_outer("extracted_relationships").alias("relationship"),
-        )
+        # Check if the source document is from the document pipeline
+        source_document_exists = "source_document_uri" in df_with_relationships.columns
+        logger.info(f"Source document URI column exists: {source_document_exists}")
 
-        # Select fields from the relationship and add the source_document_uri from the document
-        extracted_relationships_df = exploded_df.select(
+        # Explode the array of relationships into separate rows
+        if source_document_exists:
+            # Include source_document_uri when exploding relationships
+            exploded_df = df_with_relationships.select(
+                F.explode_outer("extracted_relationships").alias("relationship"),
+                F.col("source_document_uri"),
+            )
+        else:
+            # Just explode relationships without source document
+            exploded_df = df_with_relationships.select(
+                F.explode_outer("extracted_relationships").alias("relationship"),
+            )
+
+        # Build selection columns based on available fields
+        select_cols = [
             "relationship." + Relationship.FROM_ENTITY_COLUMN,
             "relationship." + Relationship.RELATIONSHIP_TYPE_COLUMN,
             "relationship." + Relationship.TO_ENTITY_COLUMN,
@@ -82,9 +93,24 @@ class RelationshipExtractorProcessor(DocumentProcessor):
             "relationship." + Relationship.FROM_ENTITY_DESCRIPTION_COLUMN,
             "relationship." + Relationship.TO_ENTITY_DESCRIPTION_COLUMN,
             "relationship." + Relationship.RELATIONSHIP_TYPE_DESCRIPTION_COLUMN,
-            # Use the source_document_uri from the document, not from the relationship
-            F.col("source_document_uri").alias(Relationship.SOURCE_DOCUMENT_URI_COLUMN),
-        )
+            # Include confidence field if available
+            "relationship." + Relationship.CONFIDENCE_COLUMN,
+            # Default value for from_imported_schema
+            F.lit(False).alias(Relationship.FROM_IMPORTED_SCHEMA_COLUMN),
+        ]
+
+        # Add the source URI, preferring document source when available
+        if source_document_exists:
+            select_cols.append(
+                F.col("source_document_uri").alias(Relationship.SOURCE_URI_COLUMN)
+            )
+            logger.info("Using document source_document_uri as the relationship source")
+        else:
+            select_cols.append("relationship." + Relationship.SOURCE_URI_COLUMN)
+            logger.info("Using relationship's own source_uri")
+
+        # Select fields from the relationship
+        extracted_relationships_df = exploded_df.select(*select_cols)
 
         # Add hash columns for deduplication
         extracted_relationships_df = (

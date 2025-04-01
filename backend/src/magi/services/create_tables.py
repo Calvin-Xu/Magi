@@ -48,8 +48,9 @@ async def create_tables(conn, force_recreate=False):
             constraint_condition TEXT,
             reason TEXT,
             is_causal BOOLEAN,
-            source_document_uri TEXT,
-            from_imported_schema BOOLEAN DEFAULT FALSE
+            source_uri TEXT,
+            from_imported_schema BOOLEAN DEFAULT FALSE,
+            confidence FLOAT
         );
     """)
 

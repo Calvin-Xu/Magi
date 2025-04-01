@@ -55,7 +55,7 @@ class Relationship:
     constraint_condition: Optional[str] = None
     reason: Optional[str] = None
     is_causal: bool = False
-    source_document_uri: Optional[str] = None
+    source_uri: Optional[str] = None
     from_imported_schema: bool = False
     confidence: Optional[float] = None
 
@@ -69,7 +69,7 @@ class Relationship:
     CONSTRAINT_CONDITION_COLUMN: str = "constraint_condition"
     REASON_COLUMN: str = "reason"
     IS_CAUSAL_COLUMN: str = "is_causal"
-    SOURCE_DOCUMENT_URI_COLUMN: str = "source_document_uri"
+    SOURCE_URI_COLUMN: str = "source_uri"
     FROM_ENTITY_HASH_COLUMN: str = "from_entity_hash"
     TO_ENTITY_HASH_COLUMN: str = "to_entity_hash"
     RELATIONSHIP_TYPE_HASH_COLUMN: str = "relationship_type_hash"
@@ -105,7 +105,7 @@ class ExtractedRelationship(BaseModel):
     is_causal: bool = Field(
         False, description="Whether the relationship represents a causal connection"
     )
-    source_document: str = Field(
+    source_uri: str = Field(
         "", description="The document from which this relationship was extracted"
     )
 
@@ -138,6 +138,7 @@ RELATIONSHIP_SCHEMA = StructType(
         StructField("constraint_condition", StringType(), True),
         StructField("reason", StringType(), False),
         StructField("is_causal", BooleanType(), False),
-        StructField("source_document", StringType(), True),
+        StructField("source_uri", StringType(), True),
+        StructField("confidence", StringType(), True),
     ]
 )

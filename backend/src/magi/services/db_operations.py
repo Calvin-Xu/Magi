@@ -120,7 +120,7 @@ async def insert_relationship(
         "constraint_condition",
         "reason",
         "is_causal",
-        "source_document_uri",
+        "source_uri",
         "from_imported_schema",
     ]
 
@@ -131,7 +131,7 @@ async def insert_relationship(
         relationship.constraint_condition,
         relationship.reason,
         relationship.is_causal,
-        relationship.source_document_uri,
+        relationship.source_uri,
         relationship.from_imported_schema,
     ]
 
@@ -390,7 +390,7 @@ async def save_relationships_to_db(
                 - constraint_condition
                 - reason
                 - is_causal
-                - source_document_uri
+                - source_uri
 
     Returns:
         A list of inserted relationship IDs from PostgreSQL.
@@ -469,7 +469,7 @@ async def save_relationships_to_db(
                 # Insert the relationship in PostgreSQL
                 query = """
                 INSERT INTO relationships
-                (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_document_uri, from_imported_schema)
+                (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_uri, from_imported_schema)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """
@@ -481,7 +481,7 @@ async def save_relationships_to_db(
                     row_dict.get(Relationship.CONSTRAINT_CONDITION_COLUMN),
                     row_dict.get(Relationship.REASON_COLUMN),
                     row_dict.get(Relationship.IS_CAUSAL_COLUMN),
-                    row_dict.get(Relationship.SOURCE_DOCUMENT_URI_COLUMN),
+                    row_dict.get(Relationship.SOURCE_URI_COLUMN),
                     row_dict.get(Relationship.FROM_IMPORTED_SCHEMA_COLUMN),
                 )
                 relationship_ids.append(relationship_id)

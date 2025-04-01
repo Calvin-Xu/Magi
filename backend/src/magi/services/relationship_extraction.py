@@ -12,7 +12,7 @@ from magi.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class RelationshipExtractionService:
+class DocumentsRelationshipExtractionService:
     """Service for extracting relationships from document batches."""
 
     def __init__(self, extractor: RelationshipExtractor, max_concurrent: int = 100):

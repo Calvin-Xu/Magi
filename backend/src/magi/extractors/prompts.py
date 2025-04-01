@@ -28,7 +28,7 @@ For each relationship, extract the following information:
 8. reason
    - A concise explanation, citing key excerpts from the text, to justify why this relationship is supported.
 9. is_causal
-   - Whether the relationship describes a causal link between random variables and is supported by quantitative evidence in the text. Answer with "yes" or "no".
+   - Whether the relationship should appear in a causal graph in the context of causal inference. Answer with "yes" or "no".
 
 Additional Guidelines:
 - Semantic Clarity: Subject-predicate-object should form a coherent sentence, though elements like articles can be dropped for brevity. Indirect objects can be included in the predicate if absolutely necessary.

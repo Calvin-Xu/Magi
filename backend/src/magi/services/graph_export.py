@@ -132,7 +132,7 @@ async def fetch_relationships(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
         r.constraint_condition,
         r.reason,
         r.is_causal,
-        r.source_document_uri,
+        r.source_uri,
         e_from.name as from_entity_name,
         e_to.name as to_entity_name,
         rt.name as relationship_type_name,
@@ -196,7 +196,7 @@ async def export_graph_to_graphml(
             constraint_condition=rel["constraint_condition"] or "",
             reason=rel["reason"] or "",
             is_causal=rel["is_causal"] or False,
-            source_document_uri=rel["source_document_uri"] or "",
+            source_uri=rel["source_uri"] or "",
         )
 
     # Export to GraphML

@@ -16,7 +16,7 @@ Your goal is to extract tables, properties, and relationships from the dataset t
 
 # Instructions
 
-1. Identify each table in the dataset
+1. Identify each table in the dataset files
 2. For each table, identify all properties (columns)
 3. Determine which properties are foreign keys referencing other tables
 4. Include detailed, globally-identifying descriptions for each table and property
@@ -53,6 +53,8 @@ Provide your analysis as a structured JSON with the following format:
 ```
 
 For each property, set "reference" to the name of the referenced table if it's a foreign key, or to false if it's not.
+
+All tables and properties must come from the dataset files provided. The support documents only serve as additional context to help you understand the dataset.
 
 Do not include any explanations outside of the JSON structure.
 """

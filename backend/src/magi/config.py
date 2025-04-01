@@ -123,6 +123,15 @@ class OpenRouterConfig:
     )
 
 
+@dataclass(frozen=True)
+class PerplexityConfig:
+    """Perplexity API configuration."""
+
+    api_key: Optional[str] = field(
+        default_factory=lambda: os.getenv("PERPLEXITY_API_KEY")
+    )
+
+
 # Load .env file only in driver process
 if os.environ.get("SPARK_EXECUTOR_ID") is None:
     _load_env_file()
@@ -139,3 +148,4 @@ GEMINI_CONFIG = GeminiConfig()
 VOYAGE_AI_CONFIG = VoyageAIConfig()
 OPENAI_CONFIG = OpenAIConfig()
 OPENROUTER_CONFIG = OpenRouterConfig()
+PERPLEXITY_CONFIG = PerplexityConfig()
