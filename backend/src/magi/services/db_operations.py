@@ -466,28 +466,73 @@ async def save_relationships_to_db(
                     )
                     continue
 
-                # Insert the relationship in PostgreSQL
-                query = """
-                INSERT INTO relationships
-                (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_uri, from_imported_schema)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                RETURNING id
+                # Check if the relationship already exists in the database
+                check_query = """
+                SELECT id, source_uris FROM relationships
+                WHERE from_entity = $1 AND to_entity = $2 AND relationship_type = $3
                 """
-                relationship_id = await conn.fetchval(
-                    query,
-                    from_entity_ref,
-                    to_entity_ref,
-                    rel_type_ref,
-                    row_dict.get(Relationship.CONSTRAINT_CONDITION_COLUMN),
-                    row_dict.get(Relationship.REASON_COLUMN),
-                    row_dict.get(Relationship.IS_CAUSAL_COLUMN),
-                    row_dict.get(Relationship.SOURCE_URI_COLUMN),
-                    row_dict.get(Relationship.FROM_IMPORTED_SCHEMA_COLUMN),
+                existing_relationship = await conn.fetchrow(
+                    check_query, from_entity_ref, to_entity_ref, rel_type_ref
                 )
-                relationship_ids.append(relationship_id)
-                logger.debug(
-                    f"Inserted relationship with ID {relationship_id} in Postgres"
-                )
+
+                # Get the source URI from the current relationship
+                source_uri = row_dict.get(Relationship.SOURCE_URI_COLUMN)
+                relationship_id = None
+
+                if existing_relationship:
+                    # Relationship exists, check if we need to append the source URI
+                    relationship_id = existing_relationship["id"]
+                    existing_source_uris = existing_relationship["source_uris"] or []
+
+                    if source_uri and source_uri not in existing_source_uris:
+                        # Add the new source URI to the list
+                        updated_source_uris = existing_source_uris + [source_uri]
+
+                        # Update the existing relationship
+                        update_query = """
+                        UPDATE relationships
+                        SET source_uris = $1
+                        WHERE id = $2
+                        """
+                        await conn.execute(
+                            update_query, updated_source_uris, relationship_id
+                        )
+                        logger.debug(
+                            f"Updated relationship {relationship_id} with new source URI: {source_uri}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Source URI already exists or is empty for relationship {relationship_id}"
+                        )
+                else:
+                    # Insert new relationship with source_uri as an array
+                    initial_source_uris = [source_uri] if source_uri else []
+
+                    query = """
+                    INSERT INTO relationships
+                    (from_entity, to_entity, relationship_type, constraint_condition, reason, is_causal, source_uris, from_imported_schema, confidence)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    RETURNING id
+                    """
+                    relationship_id = await conn.fetchval(
+                        query,
+                        from_entity_ref,
+                        to_entity_ref,
+                        rel_type_ref,
+                        row_dict.get(Relationship.CONSTRAINT_CONDITION_COLUMN),
+                        row_dict.get(Relationship.REASON_COLUMN),
+                        row_dict.get(Relationship.IS_CAUSAL_COLUMN),
+                        initial_source_uris,
+                        row_dict.get(Relationship.FROM_IMPORTED_SCHEMA_COLUMN),
+                        row_dict.get(Relationship.CONFIDENCE_COLUMN),
+                    )
+                    logger.debug(
+                        f"Inserted new relationship with ID {relationship_id} in Postgres"
+                    )
+
+                # Only append to our result list if this is a new ID
+                if relationship_id and relationship_id not in relationship_ids:
+                    relationship_ids.append(relationship_id)
 
                 # Get resolved entity and relationship type names from cache
                 from_entity_name = entity_name_cache.get(from_entity_ref)

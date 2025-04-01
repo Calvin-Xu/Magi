@@ -132,7 +132,7 @@ async def fetch_relationships(conn: asyncpg.Connection) -> List[Dict[str, Any]]:
         r.constraint_condition,
         r.reason,
         r.is_causal,
-        r.source_uri,
+        r.source_uris,
         e_from.name as from_entity_name,
         e_to.name as to_entity_name,
         rt.name as relationship_type_name,

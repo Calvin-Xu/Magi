@@ -284,7 +284,7 @@ def create_gradio_app() -> gr.Blocks:
                     rt.name || ' [' || rt.id || ']' AS relationship_type, 
                     e_to.name || ' [' || e_to.id || ']' AS to_entity, 
                     r.reason, 
-                    r.source_uri
+                    r.source_uris
                 FROM relationships r
                 JOIN entities e_from ON r.from_entity = e_from.id
                 JOIN entities e_to ON r.to_entity = e_to.id
@@ -309,7 +309,7 @@ def create_gradio_app() -> gr.Blocks:
                 "relationship_type",
                 "to_entity",
                 "reason",
-                "source_uri",
+                "source_uris",
             ]
 
             await conn.close()
