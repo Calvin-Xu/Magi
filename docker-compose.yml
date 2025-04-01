@@ -61,7 +61,7 @@ services:
       - pg-data:/var/lib/postgresql/data
 
   memgraph:
-    image: memgraph/memgraph-mage:3.0-memgraph-3.0
+    image: memgraph/memgraph-mage:3.1.1-memgraph-3.1.1
     container_name: memgraph-container
     ports:
       - "${MEMGRAPH_PORT:-7687}:7687"
@@ -69,7 +69,7 @@ services:
       - memgraph-data:/var/lib/memgraph
 
   memgraph-lab:
-    image: memgraph/lab:3.0.1
+    image: memgraph/lab:3.1.0
     container_name: memgraph-lab-container
     ports:
       - "${MEMGRAPH_LAB_PORT:-3000}:3000"
