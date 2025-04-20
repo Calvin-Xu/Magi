@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="$JAVA_HOME/bin:$PATH:/app/.venv/bin"
+# Set MCP environment variables
+ENV MCP_SERVER_NAME="Magi Knowledge Graph"
 
 WORKDIR /app
 

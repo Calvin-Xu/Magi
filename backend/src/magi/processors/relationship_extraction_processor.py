@@ -13,7 +13,7 @@ from magi.extractors.openai_extractor import OpenAIExtractor
 from magi.services.models import Relationship, RELATIONSHIP_SCHEMA
 from magi.utils.logging import get_logger
 
-from .base import DocumentProcessor
+from .base import SparkDataFrameProcessor
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -35,7 +35,7 @@ DEFAULT_MODEL = "o3-mini-2025-01-31"
 
 
 @dataclass
-class RelationshipExtractionProcessor(DocumentProcessor):
+class RelationshipExtractionProcessor(SparkDataFrameProcessor):
     """Processes documents with pre-extracted relationships."""
 
     model: str = DEFAULT_MODEL

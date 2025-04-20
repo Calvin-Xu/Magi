@@ -1,8 +1,10 @@
 """OpenAI-based schema builder."""
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
+import csv
+import asyncio
 
 from markitdown import MarkItDown
 
@@ -22,16 +24,19 @@ from magi.services.rate_limiter import RateLimit
 from magi.embedders.voyage import VoyageEmbeddingProvider
 
 from .base import SchemaBuilder
-from .models import RelationalDatasetSchema
+from .models import (
+    RelationalDatasetSchema,
+    TableSchema,
+    PropertySchema,
+)
 from .prompts import SCHEMA_EXTRACTION_PROMPT
 from magi.utils.logging import get_logger
 
-# Initialize logger
 logger = get_logger(__name__)
 
 
 class OpenAISchemaBuilder(SchemaBuilder):
-    """Extract schema from dataset files using OpenAI."""
+    """Extract schema from dataset files using OpenAI, with column chunking."""
 
     def __init__(
         self,
@@ -69,20 +74,24 @@ class OpenAISchemaBuilder(SchemaBuilder):
             max_concurrent=limits.max_concurrent,
         )
 
-    async def close(self):
+    async def close(self) -> None:
         """Clean up any async resources."""
         # No async resources to clean up for now
         pass
 
-    async def _read_dataset_sample(self, file_path: str, num_lines: int = 3) -> str:
-        """Read the header and first few lines of a dataset file.
+    async def _read_csv_header_and_rows(
+        self,
+        file_path: str,
+        num_data_rows: int = 2,
+    ) -> Tuple[List[str], List[List[str]]]:
+        """Read the header row and the first few data rows from a CSV/TSV file.
 
         Args:
             file_path: Path to the dataset file
-            num_lines: Number of lines to read (including header)
+            num_data_rows: Number of data rows to read
 
         Returns:
-            String containing the header and sample lines
+            A tuple of (header_columns, data_rows)
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"Dataset file not found: {file_path}")
@@ -90,64 +99,25 @@ class OpenAISchemaBuilder(SchemaBuilder):
         # Determine the delimiter based on file extension
         delimiter = "\t" if file_path.endswith((".tsv", ".tab")) else ","
 
-        lines = []
-        filename = os.path.basename(file_path)
+        header_columns: List[str] = []
+        data_rows: List[List[str]] = []
 
-        try:
-            with open(file_path, "r", encoding="utf-8") as file:
-                # Try to use csv reader for proper handling of quotes and escapes
-                import csv
+        with open(file_path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            for i, row in enumerate(reader):
+                if i == 0:
+                    header_columns = row
+                else:
+                    data_rows.append(row)
+                if i >= num_data_rows:
+                    break
 
-                reader = csv.reader(file, delimiter=delimiter)
-                for i, row in enumerate(reader):
-                    if i >= num_lines:
-                        break
-                    lines.append(delimiter.join(row))
-        except Exception as e:
-            # Fallback to simple line reading if csv reader fails
-            logger.warning(
-                f"Error using CSV reader: {e}. Falling back to simple lines."
-            )
-            try:
-                with open(file_path, "r", encoding="utf-8") as file:
-                    for i, line in enumerate(file):
-                        if i >= num_lines:
-                            break
-                        lines.append(line.strip())
-            except Exception as e2:
-                logger.error(f"Error reading dataset file {file_path}: {e2}")
-                raise
-
-        sample = "\n".join(lines)
-        return f"File: {filename}\n{sample}"
-
-    async def _read_dataset_files(
-        self, dataset_paths: List[str], num_lines: int = 3
-    ) -> str:
-        """Read samples from multiple dataset files and concatenate them.
-
-        Args:
-            dataset_paths: Paths to the dataset files
-            num_lines: Number of lines to read from each file
-
-        Returns:
-            String containing samples from all files
-        """
-        file_samples = []
-
-        for path in dataset_paths:
-            try:
-                sample = await self._read_dataset_sample(path, num_lines)
-                file_samples.append(sample)
-            except Exception as e:
-                logger.error(f"Error reading dataset file {path}: {e}")
-
-        return "\n\n".join(file_samples)
+        return header_columns, data_rows
 
     async def _read_support_documents(
-        self, document_paths: List[str], max_chars: int = 10000
+        self, document_paths: List[str], max_chars: Optional[int] = None
     ) -> str:
-        """Read support documents and concatenate their contents.
+        """Read support documents and concatenate their contents as text.
 
         Args:
             document_paths: List of paths to support documents
@@ -158,7 +128,7 @@ class OpenAISchemaBuilder(SchemaBuilder):
         """
         all_docs = []
 
-        for path in document_paths:
+        for path in document_paths or []:
             if not os.path.exists(path):
                 logger.warning(f"Support document not found: {path}")
                 continue
@@ -166,105 +136,265 @@ class OpenAISchemaBuilder(SchemaBuilder):
                 md = MarkItDown(enable_plugins=False)
                 result = md.convert(path)
                 doc_name = os.path.basename(path)
-                all_docs.append(f"--- {doc_name} ---\n{result.text_content}\n")
+                # Trim content to max_chars if needed
+                text_content = (
+                    result.text_content[:max_chars]
+                    if max_chars
+                    else result.text_content
+                )
+                all_docs.append(f"--- {doc_name} ---\n{text_content}\n")
             except Exception as e:
                 logger.error(f"Error reading support document {path}: {e}")
 
         return "\n\n".join(all_docs)
 
-    def create_schema_json_format(self, model_class):
+    def _create_schema_json_format(self) -> Dict[str, str]:
         """
-        Create a proper JSON schema format for OpenAI API from a Pydantic model.
-
-        Args:
-            model_class: The Pydantic model class
-
-        Returns:
-            Dict containing the proper format for OpenAI's response_format
+        Minimal placeholder for instructing the LLM to return valid JSON.
+        In some OpenAI endpoints, you can pass a function calling or JSON schema.
+        For older endpoints, you just parse the raw text.
         """
         return {"type": "json_object"}
+
+    async def _extract_schema_chunk(
+        self,
+        table_name: str,
+        chunk_header: List[str],
+        chunk_data: List[List[str]],
+        chunk_start_index: int,
+        chunk_end_index: int,
+        total_columns: int,
+        user_prompt: str,
+        support_docs_text: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Given a chunk of columns from one table, call the LLM to extract partial schema.
+        Returns a dictionary of the form:
+        {
+            "properties": {
+                "col1": {...},
+                "col2": {...}
+            }
+        }
+        or None if extraction fails.
+        """
+        # Format the chunk sample as a small textual representation for the prompt
+        # We'll show the chunk header plus the first few rows for that chunk
+        chunk_text_lines = []
+        # Build a simple table-like string for the chunk
+        # Header
+        chunk_text_lines.append(",".join(chunk_header))
+        # Data
+        for row in chunk_data:
+            # Make sure we only take the same slice from the row
+            chunk_text_lines.append(",".join(row))
+
+        chunk_text = "\n".join(chunk_text_lines)
+
+        # Prepare the final prompt
+        prompt = SCHEMA_EXTRACTION_PROMPT.format(
+            total_columns=total_columns,
+            chunk_start_index=chunk_start_index
+            + 1,  # 1-based index in user-friendly format
+            chunk_end_index=chunk_end_index,
+            table_name=table_name,
+            table_chunk_sample=chunk_text,
+            user_prompt="USER CONTEXT:\n" + user_prompt if user_prompt else "",
+            support_documents=(
+                "SUPPORT DOCUMENTS:\n" + support_docs_text if support_docs_text else ""
+            ),
+        )
+
+        # Call the LLM
+        try:
+            messages = [{"role": "user", "content": prompt}]
+
+            completion = await call_openai_with_backoff(
+                client=self._client,
+                model=self.model,
+                messages=messages,
+                response_format=self._create_schema_json_format(),
+                rate_limit=self._rate_limit,
+                max_retries=self.max_retries,
+            )
+
+            if not completion:
+                logger.warning("No valid completion returned for schema chunk.")
+                return None
+
+            # Attempt to parse JSON content from the message
+            message = completion.choices[0].message
+            if not hasattr(message, "content") or not message.content:
+                logger.warning("No content in the chunk response message.")
+                return None
+
+            logger.debug(f"Chunk response content: {message.content}")
+
+            # Attempt to load JSON
+            return json.loads(message.content)
+
+        except Exception as e:
+            logger.error(f"Error extracting schema for chunk: {e}")
+            return None
+
+    def _merge_partial_schema(
+        self, existing_schema: Dict[str, PropertySchema], partial_schema: Dict[str, Any]
+    ) -> Dict[str, PropertySchema]:
+        """
+        Merge a partial schema chunk result into the existing schema dictionary.
+
+        We expect `partial_schema` to be of the form:
+        {
+          "properties": {
+            "col_name": {
+              "description": str,
+              "type": str,
+              "is_primary_key": bool,
+              "reference": str|false
+            },
+            ...
+          }
+        }
+        """
+        props = partial_schema.get("properties", {})
+        for col_name, col_data in props.items():
+            # Convert to PropertySchema (with validation) if possible
+            try:
+                p_schema = PropertySchema(**col_data)
+                existing_schema[col_name] = p_schema
+            except Exception as e:
+                logger.warning(f"Failed to parse property schema for '{col_name}': {e}")
+        return existing_schema
+
+    async def _extract_schema_for_table_in_chunks(
+        self,
+        table_name: str,
+        file_path: str,
+        user_prompt: str,
+        support_docs_text: str,
+        max_chunk_columns: int,
+    ) -> Optional[TableSchema]:
+        """
+        Extract the schema for a single table by chunking its columns.
+        """
+        # Read header and a couple of data rows
+        header, data_rows = await self._read_csv_header_and_rows(file_path)
+        total_cols = len(header)
+
+        if total_cols == 0:
+            logger.warning(f"No columns found in table {table_name}. Skipping.")
+            return None
+
+        # We'll store the final merged schema for this table
+        merged_properties: Dict[str, PropertySchema] = {}
+
+        # Prepare tasks for concurrent execution
+        chunk_tasks = []
+        chunk_ranges = []
+
+        # We iterate in increments of max_chunk_columns over the header
+        start = 0
+        while start < total_cols:
+            end = min(start + max_chunk_columns, total_cols)
+            chunk_header = header[start:end]
+
+            # Build chunk_data by slicing the same columns in data_rows
+            chunk_data = []
+            for row in data_rows:
+                # pad row if needed to avoid IndexError
+                # because CSV might have fewer columns in short lines
+                row_padded = row + ([""] * (len(header) - len(row)))
+                chunk_data.append(row_padded[start:end])
+
+            # Create a task for extracting this chunk
+            task = self._extract_schema_chunk(
+                table_name=table_name,
+                chunk_header=chunk_header,
+                chunk_data=chunk_data,
+                chunk_start_index=start,
+                chunk_end_index=end,
+                total_columns=total_cols,
+                user_prompt=user_prompt,
+                support_docs_text=support_docs_text,
+            )
+
+            chunk_tasks.append(task)
+            chunk_ranges.append((start, end))
+            start += max_chunk_columns
+
+        # Execute all chunk tasks concurrently
+        if chunk_tasks:
+            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+
+            # Process results, handling any exceptions
+            for i, result in enumerate(chunk_results):
+                if isinstance(result, Exception):
+                    start, end = chunk_ranges[i]
+                    logger.error(
+                        f"Error extracting schema chunk {start}-{end}: {result}"
+                    )
+                    continue
+
+                if result:
+                    # Merge partial schema into final
+                    merged_properties = self._merge_partial_schema(
+                        merged_properties, result
+                    )
+
+        # Build final table schema
+        # For demonstration, we use the file name as table description.
+        # In reality, you'd want to prompt the LLM for a short table-level description
+        # or parse user_prompt for that info. For now, we set a placeholder.
+        if not merged_properties:
+            return None
+
+        return TableSchema(
+            properties=merged_properties,
+            description=f"Table '{table_name}' extracted from file '{os.path.basename(file_path)}'.",
+        )
 
     async def extract_schema(
         self,
         dataset_paths: List[str],
         user_prompt: str,
-        support_documents: List[str] = None,
-    ) -> RelationalDatasetSchema:
-        """Extract schema from multiple dataset files.
+        support_documents: Optional[List[str]] = None,
+        max_chunk_columns: int = 50,
+    ) -> Optional[RelationalDatasetSchema]:
+        """Extract schema from multiple dataset files, chunking columns to avoid context overflow.
 
         Args:
             dataset_paths: List of paths to the dataset files
             user_prompt: User's prompt or description about the dataset
             support_documents: Optional list of paths to support documents
+            max_chunk_columns: Maximum number of columns to provide to the LLM at once
 
         Returns:
-            Extracted relational dataset schema
+            Extracted relational dataset schema or None if extraction fails
         """
-        logger.info(f"Extracting schema from {len(dataset_paths)} dataset files")
+        logger.info(f"Extracting schema from {len(dataset_paths)} dataset files.")
+        support_docs_text = await self._read_support_documents(support_documents)
 
-        # Read dataset files and support documents
-        dataset_files_text = await self._read_dataset_files(dataset_paths)
-        support_docs_text = ""
-        if support_documents:
-            support_docs_text = await self._read_support_documents(support_documents)
+        # Build a combined schema across multiple dataset files
+        combined_schema = RelationalDatasetSchema(tables={})
+        for file_path in dataset_paths:
+            table_name = os.path.splitext(os.path.basename(file_path))[0]
+            logger.info(f"Processing table: {table_name}")
 
-        # Format the extraction prompt
-        prompt = (
-            SCHEMA_EXTRACTION_PROMPT.replace("{dataset_files}", dataset_files_text)
-            .replace("{user_prompt}", user_prompt)
-            .replace("{support_documents}", support_docs_text)
-        )
-
-        try:
-            # Prepare message for OpenAI API
-            messages = [{"role": "user", "content": prompt}]
-
-            # Call OpenAI API with backoff and rate limiting
-            completion = await call_openai_with_backoff(
-                client=self._client,
-                model=self.model,
-                messages=messages,
-                response_format=self.create_schema_json_format(RelationalDatasetSchema),
-                rate_limit=self._rate_limit,
-                max_retries=self.max_retries,
+            table_schema = await self._extract_schema_for_table_in_chunks(
+                table_name=table_name,
+                file_path=file_path,
+                user_prompt=user_prompt,
+                support_docs_text=support_docs_text,
+                max_chunk_columns=max_chunk_columns,
             )
+            if table_schema:
+                combined_schema.tables[table_name] = table_schema
 
-            # Extract the parsed result
-            if not completion:
-                logger.warning("No valid response for dataset files")
-                return None
-
-            # Get the response message
-            message = completion.choices[0].message
-
-            # Check for refusal
-            if hasattr(message, "refusal") and message.refusal:
-                logger.warning(f"Model refused to answer. Reason: {message.refusal}")
-                return None
-
-            # Parse the content as JSON and convert to RelationalDatasetSchema
-            if hasattr(message, "content") and message.content:
-                try:
-                    logger.info(f"Response content: {message.content}")
-                    # Parse JSON content into our schema model
-                    schema_json = json.loads(message.content)
-                    schema = RelationalDatasetSchema.model_validate(schema_json)
-
-                    logger.info(
-                        f"Extracted schema with {len(schema.tables)} tables and "
-                        f"{sum(len(table.properties) for table in schema.tables.values())} properties"
-                    )
-                    return schema
-                except Exception as e:
-                    logger.error(f"Error parsing schema JSON: {e}")
-                    return None
-            else:
-                logger.warning("No content in response message")
-                return None
-
-        except Exception as e:
-            logger.exception(f"Error extracting schema: {str(e)}")
+        if not combined_schema.tables:
+            logger.warning("No tables extracted from the dataset files.")
             return None
+
+        return combined_schema
 
     async def create_schema_graph(
         self,
@@ -276,6 +406,7 @@ class OpenAISchemaBuilder(SchemaBuilder):
         """Create a schema graph in the database from the extracted schema.
 
         Args:
+            source_uri: A URI or path pointing to the data source
             schema: The extracted relational dataset schema
             conn: Database connection
             embedding_provider: Provider for generating embeddings
@@ -284,22 +415,18 @@ class OpenAISchemaBuilder(SchemaBuilder):
             Dictionary with counts of created entities and relationships
         """
         if not schema:
-            logger.error("Cannot create schema graph from empty schema")
+            logger.error("Cannot create schema graph from empty schema.")
             return {}
 
         try:
             # Step 1: Create entities and relationship types
             entities: Dict[str, Entity] = {}
-            has_property_rel_type = None
-            references_rel_type = None
-
-            # Create relationship types if they don't exist yet
+            # RelationshipTypes
             has_property_rel_type = RelationshipType(
                 name="has property",
                 description="A relationship indicating that a table has a property.",
                 from_imported_schema=True,
             )
-
             references_rel_type = RelationshipType(
                 name="references",
                 description="A relationship indicating that a property references another table.",
@@ -325,34 +452,31 @@ class OpenAISchemaBuilder(SchemaBuilder):
                     )
                     entities[f"{table_name}.{prop_name}"] = property_entity
 
-            # Step 2: Generate embeddings for entities and relationship types
+            # Step 2: Generate embeddings
             rel_types = [has_property_rel_type, references_rel_type]
             entity_list = list(entities.values())
 
             # Prepare a single list of all descriptions for efficient batched embedding
             all_descriptions = [entity.description for entity in entity_list] + [
-                rel_type.description for rel_type in rel_types
+                rt.description for rt in rel_types
             ]
-
-            # Generate embeddings for all entities and relationship types in a single call
+            # Generate embeddings in a single call
             all_embeddings = await embedding_provider.embed(all_descriptions)
 
-            # Distribute embeddings back to entities and relationship types
+            # Assign embeddings back
             entity_count = len(entity_list)
             for i, entity in enumerate(entity_list):
                 entity.embedding = all_embeddings[i]
+            for i, rt in enumerate(rel_types):
+                rt.embedding = all_embeddings[entity_count + i]
 
-            for i, rel_type in enumerate(rel_types):
-                rel_type.embedding = all_embeddings[entity_count + i]
-
-            # Step 3: Insert entities and relationship types into the database
+            # Step 3: Insert Entities and RelationshipTypes
             entity_ids = {}
-            for entity in entity_list:
-                entity_id = await insert_entity(conn, entity)
-                entity.postgres_reference = entity_id
-                entity_ids[entity.name] = entity_id
+            for e in entity_list:
+                eid = await insert_entity(conn, e)
+                e.postgres_reference = eid
+                entity_ids[e.name] = eid
 
-            # Insert relationship types
             has_property_id = await insert_relationship_type(
                 conn, has_property_rel_type
             )
@@ -361,17 +485,16 @@ class OpenAISchemaBuilder(SchemaBuilder):
             references_id = await insert_relationship_type(conn, references_rel_type)
             references_rel_type.postgres_reference = references_id
 
-            # Step 4: Create relationships based on schema
+            # Step 4: Create relationships
             relationship_dicts = []
+            references_count = 0
 
-            # Create "has property" relationships
             for table_name, table_schema in schema.tables.items():
                 table_entity_id = entity_ids[table_name]
 
-                for prop_name in table_schema.properties:
+                # "has property" relationships
+                for prop_name, prop_schema in table_schema.properties.items():
                     property_entity_id = entity_ids[f"{table_name}.{prop_name}"]
-
-                    # Add "has property" relationship
                     relationship_dicts.append(
                         {
                             "from_entity_reference": table_entity_id,
@@ -383,24 +506,14 @@ class OpenAISchemaBuilder(SchemaBuilder):
                         }
                     )
 
-            # Create "references" relationships for foreign keys
-            references_count = 0
-            for table_name, table_schema in schema.tables.items():
-                for prop_name, prop_schema in table_schema.properties.items():
-                    # Check if this property references another table
-                    if prop_schema.reference is not False:
-                        referenced_table = prop_schema.reference
-
-                        # Make sure the referenced table exists in our schema
-                        if referenced_table in entity_ids:
-                            property_entity_id = entity_ids[f"{table_name}.{prop_name}"]
-                            referenced_table_id = entity_ids[referenced_table]
-
-                            # Add "references" relationship
+                    # "references" relationships for foreign keys
+                    if prop_schema.reference and prop_schema.reference is not False:
+                        ref_table = prop_schema.reference
+                        if ref_table in entity_ids:
                             relationship_dicts.append(
                                 {
                                     "from_entity_reference": property_entity_id,
-                                    "to_entity_reference": referenced_table_id,
+                                    "to_entity_reference": entity_ids[ref_table],
                                     "relationship_type_reference": references_id,
                                     "from_imported_schema": True,
                                     "is_causal": False,
@@ -410,25 +523,22 @@ class OpenAISchemaBuilder(SchemaBuilder):
                             references_count += 1
                         else:
                             logger.warning(
-                                f"Referenced table {referenced_table} not found in schema"
+                                f"Referenced table '{ref_table}' not found among extracted entities."
                             )
 
-            # Step 5: Save relationships to the database
+            # Step 5: Persist relationships
             await save_relationships_to_db(conn, relationship_dicts)
 
             return {
                 "tables_created": len(schema.tables),
                 "properties_created": sum(
-                    len(table.properties) for table in schema.tables.values()
+                    len(tbl.properties) for tbl in schema.tables.values()
                 ),
                 "entities_created": len(entity_list),
                 "has_property_relationships": len(relationship_dicts)
                 - references_count,
                 "references_relationships": references_count,
                 "total_relationships": len(relationship_dicts),
-                "entities": len(entity_list),
-                "rel_types": 2,  # has_property and references
-                "relationships": len(relationship_dicts),
             }
 
         except Exception as e:

@@ -1,9 +1,9 @@
 """Resolvers for entities and relationship types."""
 
-from .base import Resolver
+from .base import SemanticObjectResolver
 from .openai_resolver import OpenAIResolver
 
 __all__ = [
-    "Resolver",
+    "SemanticObjectResolver",
     "OpenAIResolver",
 ]

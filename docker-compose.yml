@@ -26,6 +26,8 @@ services:
       - MEMGRAPH_LAB_PORT=${MEMGRAPH_LAB_PORT:-3000}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      # MCP configuration
+      - MCP_SERVER_NAME="Magi Knowledge Graph"
     command: uvicorn magi.main:app --reload --host 0.0.0.0 --port ${MAGI_PORT:-8000}
     depends_on:
       - magi-frontend

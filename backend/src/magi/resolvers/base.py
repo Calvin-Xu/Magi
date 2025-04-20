@@ -30,7 +30,7 @@ def chunk_dict(input_dict: Dict[str, T], chunk_size: int) -> List[Dict[str, T]]:
     return chunks
 
 
-class Resolver(ABC, Generic[T]):
+class SemanticObjectResolver(ABC, Generic[T]):
     """
     Abstract base class for resolvers.
 

@@ -1,5 +1,5 @@
 """
-Concrete OpenAI-based resolver, chunking by max_objects_per_batch.
+Concrete OpenAI-based resolver
 """
 
 import asyncio
@@ -10,7 +10,12 @@ import tiktoken
 from openai import OpenAI
 
 from magi.config import OPENAI_CONFIG
-from magi.resolvers.base import MergedEntity, ObjectWithEmbedding, Resolver, T
+from magi.resolvers.base import (
+    MergedEntity,
+    ObjectWithEmbedding,
+    SemanticObjectResolver,
+    T,
+)
 from magi.resolvers.models import (
     LLMIntraBatchMergeResponse,
     VerificationBatchResponse,
@@ -22,7 +27,7 @@ from magi.services import db_operations
 logger = get_logger(__name__)
 
 
-class OpenAIResolver(Resolver[T]):
+class OpenAIResolver(SemanticObjectResolver[T]):
     def __init__(
         self,
         conn,

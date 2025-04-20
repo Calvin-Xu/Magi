@@ -16,7 +16,7 @@ from magi.processors.relationship_extraction_processor import (
     RelationshipExtractionProcessor,
 )
 from magi.resolvers import OpenAIResolver
-from magi.resolvers.base import Resolver
+from magi.resolvers.base import SemanticObjectResolver
 from magi.services.models import (
     RELATIONSHIP_SCHEMA,
     Entity,
@@ -43,8 +43,8 @@ class DocumentPipeline:
         conn: asyncpg.Connection,
         model: str,
         embedding_provider: Optional[VoyageEmbeddingProvider] = None,
-        entity_resolver: Optional[Resolver[Entity]] = None,
-        rel_type_resolver: Optional[Resolver[RelationshipType]] = None,
+        entity_resolver: Optional[SemanticObjectResolver[Entity]] = None,
+        rel_type_resolver: Optional[SemanticObjectResolver[RelationshipType]] = None,
         credentials: Optional[AWSCredentials] = None,
         log_level: int = logging.DEBUG,
     ):
@@ -175,8 +175,8 @@ class GraphAugmentationPipeline:
         augmenter: Optional[GraphAugmenter] = None,
         augmenter_type: Type[GraphAugmenter] = PerplexityAugmenter,
         embedding_provider: Optional[VoyageEmbeddingProvider] = None,
-        entity_resolver: Optional[Resolver[Entity]] = None,
-        rel_type_resolver: Optional[Resolver[RelationshipType]] = None,
+        entity_resolver: Optional[SemanticObjectResolver[Entity]] = None,
+        rel_type_resolver: Optional[SemanticObjectResolver[RelationshipType]] = None,
         log_level: int = logging.DEBUG,
     ):
         """

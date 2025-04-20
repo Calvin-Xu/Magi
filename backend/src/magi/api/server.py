@@ -48,7 +48,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount Gradio app
-    app = gr.mount_gradio_app(app, create_gradio_app(), path="/")
+    app = gr.mount_gradio_app(app, create_gradio_app(), path="/ui")
 
     return app

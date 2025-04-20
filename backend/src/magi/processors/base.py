@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from pyspark.sql import DataFrame
 
 
-class DocumentProcessor(ABC):
+class SparkDataFrameProcessor(ABC):
     """Abstract base class for document processors that extract information."""
 
     @abstractmethod

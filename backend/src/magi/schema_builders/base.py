@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 
 class SchemaBuilder(ABC):
     """Base abstract class for all schema builders.
-    
+
     SchemaBuilder is responsible for extracting schemas from datasets,
     with concrete implementations handling the specifics of different
     extraction approaches and models.
@@ -41,14 +41,16 @@ class SchemaBuilder(ABC):
         dataset_paths: List[str],
         user_prompt: str,
         support_documents: Optional[List[str]] = None,
+        max_chunk_columns: int = 50,
     ) -> Any:
         """Extract schema from dataset files.
-        
+
         Args:
             dataset_paths: List of paths to the dataset files
             user_prompt: User's prompt or description about the dataset
             support_documents: Optional list of paths to support documents
-            
+            max_chunk_columns: Maximum number of columns to provide to the LLM at once
+
         Returns:
             Extracted schema in implementation-specific format
         """
@@ -62,12 +64,12 @@ class SchemaBuilder(ABC):
         embedding_provider: Any,
     ) -> Dict[str, int]:
         """Create a schema graph in the database from the extracted schema.
-        
+
         Args:
             schema: The extracted schema
             conn: Database connection
             embedding_provider: Provider for generating embeddings
-            
+
         Returns:
             Dictionary with counts of created entities and relationships
         """

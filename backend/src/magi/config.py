@@ -52,7 +52,7 @@ class MemgraphLabConfig:
 class MagiConfig:
     """Magi application configuration."""
 
-    port: int = field(default_factory=lambda: int(os.getenv("MAGI_PORT", "1998")))
+    port: int = field(default_factory=lambda: int(os.getenv("MAGI_PORT", "8000")))
 
 
 @dataclass(frozen=True)

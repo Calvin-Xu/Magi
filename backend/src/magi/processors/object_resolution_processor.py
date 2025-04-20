@@ -10,7 +10,8 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 from magi.embedders.base import EmbeddingProvider
-from magi.resolvers.base import Resolver
+from magi.processors.base import SparkDataFrameProcessor
+from magi.resolvers.base import SemanticObjectResolver
 from magi.services.models import Entity, Relationship, RelationshipType
 from magi.utils import get_logger, log_async_function_call
 
@@ -20,7 +21,7 @@ T = Union[Entity, RelationshipType]
 
 
 @dataclass
-class ObjectResolutionProcessor:
+class ObjectResolutionProcessor(SparkDataFrameProcessor):
     """
     Processor that resolves entities and relationship types from extracted relationships.
 
@@ -30,8 +31,8 @@ class ObjectResolutionProcessor:
     """
 
     embedding_provider: EmbeddingProvider
-    entity_resolver: Resolver[Entity]
-    rel_type_resolver: Resolver[RelationshipType]
+    entity_resolver: SemanticObjectResolver[Entity]
+    rel_type_resolver: SemanticObjectResolver[RelationshipType]
     conn: asyncpg.Connection
 
     @log_async_function_call()
@@ -184,7 +185,7 @@ class ObjectResolutionProcessor:
         )
 
     async def _create_extracted_entities_df_with_resolver(
-        self, relationships_df: DataFrame, resolver: Resolver
+        self, relationships_df: DataFrame, resolver: SemanticObjectResolver
     ) -> Tuple[DataFrame, Dict[str, str]]:
         """
         Identify unique entities from a Spark DF, compute embeddings, resolve them,
@@ -284,7 +285,7 @@ class ObjectResolutionProcessor:
         return entity_ref_sdf, hash_to_reference
 
     async def _create_extracted_rel_types_df_with_resolver(
-        self, relationships_df: DataFrame, resolver: Resolver
+        self, relationships_df: DataFrame, resolver: SemanticObjectResolver
     ) -> Tuple[DataFrame, Dict[str, str]]:
         """
         Identify unique relationship types from a Spark DF, compute embeddings, resolve them,
@@ -469,20 +470,19 @@ class ObjectResolutionProcessor:
             A list of inserted relationship IDs from PostgreSQL.
         """
         from src.magi.services.db_operations import save_relationships_to_db
-        
+
         row_count = relationships_df.count()
         logger.info(f"Saving {row_count} relationships to the database")
-        
+
         # Collect to driver for insertion
         all_rows = relationships_df.collect()
-        
+
         # Convert Spark Rows to dictionaries for the db_operations function
         relationships_data = [row.asDict() for row in all_rows]
-        
+
         # Call the centralized function to save relationships
         relationship_ids = await save_relationships_to_db(
-            conn=self.conn, 
-            relationships_data=relationships_data
+            conn=self.conn, relationships_data=relationships_data
         )
-        
+
         return relationship_ids

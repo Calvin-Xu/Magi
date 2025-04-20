@@ -28,6 +28,7 @@ dependencies = [
     "networkx>=2.8.8",
     "fhir-resources>=8.0.0",
     "markitdown[all]>=0.0.2",
+    "mcp[cli]>=1.6.0",
 ]
 
 [project.optional-dependencies]
